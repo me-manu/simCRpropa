@@ -14,7 +14,7 @@ try:
 except:
     pass
 from os import path
-from haloanalysis.batchfarm import utils,lsf
+from fermiAnalysis.batchfarm import utils,lsf
 from copy import deepcopy
 from glob import glob
 from astropy.table import Table
