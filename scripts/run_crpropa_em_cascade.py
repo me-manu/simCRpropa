@@ -120,7 +120,7 @@ if __name__ == '__main__':
     hfile = outputfile.split(".dat")[0] + ".hdf5"
     col.convertOutput2Hdf5(names, units, data, weights, hfile, config,
               pvec_id = ['','0'],
-              xvec_id = [''],
+              xvec_id = ['','0'],
               useSpectrum = useSpectrum)
 
     #utils.zipfiles(sim.outputfile,sim.outputfile + '.gz', nodir = True)
