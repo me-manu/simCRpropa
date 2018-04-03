@@ -329,13 +329,15 @@ class SimCRPropa(object):
         self.output.enable(Output.SourceEnergyColumn)
         self.output.enable(Output.TrajectoryLengthColumn)
         self.output.enable(Output.SourceDirectionColumn)
+        self.output.enable(Output.SourcePositionColumn)
 
         self.output.disable(Output.RedshiftColumn)
         self.output.disable(Output.CreatedDirectionColumn)
         self.output.disable(Output.CreatedEnergyColumn)
         self.output.disable(Output.CreatedPositionColumn)
         self.output.disable(Output.SourceIdColumn)
-        self.output.disable(Output.SourcePositionColumn)
+        # we need this column for the blazar jet, don't disable
+        #self.output.disable(Output.SourcePositionColumn)
 
 
         logging.info('Saving output to {0:s}'.format(self.outputfile))

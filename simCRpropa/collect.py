@@ -64,7 +64,7 @@ def combine_output(outfile, overwrite = False):
         conf = yaml.load(f['simEM'].attrs['config'])
         try:
             f['simEM'].keys()
-        except RuntimeError:
+        except (RuntimeError, ValueError):
             logging.error("There was a problem with {0:s}\nContinuing with next file".format(fi))
             continue
 
@@ -91,59 +91,59 @@ def combine_output(outfile, overwrite = False):
                     final_rows[k] = final_rows[k] + f[k].shape[0]
                 elif len(f[k].shape) == 2: # position vectors
                     final_rows[k] = final_rows[k] + f[k].shape[1]
-            f.close()
-            if not skipped:
-                ifile += 1
-
-        ifile = 0
-        for i,fi in enumerate(ff):
-            if i in skipped_files:
-                utils.rm(fi)
-                continue
-
-            f = h5py.File(fi, "r+")
-            try:
-                f['simEM'].keys()
-            except RuntimeError:
-                logging.error("There was a problem with {0:s}\nContinuing with next file".format(fi))
-                continue
-            for name in f['simEM']:                                                                        
-                for Eb in f['simEM'][name]:                                                                
-                    k = 'simEM/' + name + '/' + Eb  
-                    if ifile == 0:
-                        where_to_start_appending[k] = 0
-                        #first file; create the dummy dataset with no max shape
-                    if len(f[k].shape) == 2 or (f[k].shape[0] == 0 and (k.find('X') >= 0 or k.find('P') >= 0)):
-
-                        if not k in combined:
-                            combined.create_dataset(k, 
-                                (3,final_rows[k]),
-                                dtype = f[k].dtype,
-                                compression="gzip")  
-
-                    elif len(f[k].shape) == 1:
-
-                        if not k in combined:
-                            combined.create_dataset(k,
-                                (final_rows[k],),
-                                dtype = f[k].dtype,
-                                compression="gzip")
-                    if len(f[k].shape) == 1:
-                        if i and (k == 'simEM/intspec/Ecen' or k == 'simEM/intspec/weights'):
-                            continue
-                        combined[k][where_to_start_appending[k]:where_to_start_appending[k] + f[k].shape[0]] = \
-                            f[k][()] * len(ff) if k == 'simEM/intspec/weights' else f[k]
-                        where_to_start_appending[k] += f[k].shape[0]
-                    elif len(f[k].shape) == 2:
-                        combined[k][:,where_to_start_appending[k]:where_to_start_appending[k] + f[k].shape[1]] = f[k]
-                        where_to_start_appending[k] += f[k].shape[1]
-
-            if not ifile:
-                combined['simEM'].attrs['config'] = f['simEM'].attrs['config']
-            f.close()
+        f.close()
+        if not skipped:
             ifile += 1
-        combined.close()
-        logging.info("Done.")
+
+    ifile = 0
+    for i,fi in enumerate(ff):
+        if i in skipped_files:
+            utils.rm(fi)
+            continue
+
+        f = h5py.File(fi, "r+")
+        try:
+            f['simEM'].keys()
+        except RuntimeError:
+            logging.error("There was a problem with {0:s}\nContinuing with next file".format(fi))
+            continue
+        for name in f['simEM']:                                                                        
+            for Eb in f['simEM'][name]:                                                                
+                k = 'simEM/' + name + '/' + Eb  
+                if ifile == 0:
+                    where_to_start_appending[k] = 0
+                    #first file; create the dummy dataset with no max shape
+                if len(f[k].shape) == 2 or (f[k].shape[0] == 0 and (k.find('X') >= 0 or k.find('P') >= 0)):
+
+                    if not k in combined:
+                        combined.create_dataset(k, 
+                            (3,final_rows[k]),
+                            dtype = f[k].dtype,
+                            compression="gzip")  
+
+                elif len(f[k].shape) == 1:
+
+                    if not k in combined:
+                        combined.create_dataset(k,
+                            (final_rows[k],),
+                            dtype = f[k].dtype,
+                            compression="gzip")
+                if len(f[k].shape) == 1:
+                    if i and (k == 'simEM/intspec/Ecen' or k == 'simEM/intspec/weights'):
+                        continue
+                    combined[k][where_to_start_appending[k]:where_to_start_appending[k] + f[k].shape[0]] = \
+                        f[k][()] * len(ff) if k == 'simEM/intspec/weights' else f[k]
+                    where_to_start_appending[k] += f[k].shape[0]
+                elif len(f[k].shape) == 2:
+                    combined[k][:,where_to_start_appending[k]:where_to_start_appending[k] + f[k].shape[1]] = f[k]
+                    where_to_start_appending[k] += f[k].shape[1]
+
+        if not ifile:
+            combined['simEM'].attrs['config'] = f['simEM'].attrs['config']
+        f.close()
+        ifile += 1
+    combined.close()
+    logging.info("Done.")
 
     return
 
