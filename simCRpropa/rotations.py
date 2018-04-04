@@ -9,6 +9,91 @@ def car2sph(vec, axis = 0):
     result[2,:] = np.arccos(vec[2,:] / result[0,:]) # theta component
     return result
 
+def project2observer(vec, unitvec2obs, axis = 0):
+    """transforms vector to observers coordinate system
+
+    Parameter
+    ---------
+    vec: `~numpy.ndarray`
+        Vector to be transformed
+    unitvec2obs: `~numpy.ndarray`
+        Unit vector to observer
+
+    {options}
+
+    axis: int
+        axis of vector components
+        default: 0
+
+    Returns
+    -------
+    `~numpy.ndarray` with projected vec
+    """
+    r = np.linalg.norm(unitvec2obs, axis = axis)
+
+    if axis == 0:
+        rho = np.sqrt(unitvec2obs[0,:]*unitvec2obs[0,:] + \
+                unitvec2obs[1,:]*unitvec2obs[1,:])
+        cosphi = unitvec2obs[0,:] / rho
+        sinphi = unitvec2obs[1,:] / rho
+        costheta = unitvec2obs[2,:] / r
+
+    elif axis == 1:
+        rho = np.sqrt(unitvec2obs[:,0]*unitvec2obs[:,0] + \
+                unitvec2obs[:,1]*unitvec2obs[:,1])
+        cosphi = unitvec2obs[:,0] / rho
+        sinphi = unitvec2obs[:,1] / rho
+        costheta = unitvec2obs[:,2] / r
+
+    sintheta = rho / r
+
+    e1 = np.vstack([-sinphi, cosphi, np.zeros_like(sinphi)])
+    e2 = np.vstack([cosphi * costheta, sinphi * costheta, -sintheta])
+    e3 = -unitvec2obs
+
+    result = np.vstack([np.sum(vec * e1, axis = 0),
+                  np.sum(vec * e2, axis = 0),
+                  np.sum(vec * e3, axis = 0)])
+    return result
+
+def projectjetaxis(vec, jet_opening_angle = 5.,
+                    jet_theta_angle = 5.,
+                    jet_phi_angle = 90.):
+    """
+    Project inital momentum vectors on jet axis
+    and select only momentum vectors that fall within cone
+
+    Parameters
+    ----------
+    vec: `~numpy.ndarray`
+        Vector of initial momenta
+    jet_opening_angle: float
+        jet opening angle in degrees
+    jet_theta_angle: float
+        theta angle of jet axis, in degrees, 
+        this is the angle to the l.o.s. to the observer
+    jet_phi_angle: float
+        phi angle of jet axis, in degrees
+
+    Returns
+    -------
+    array with mask for initial momentum vectors
+    """
+    phi = np.radians(jet_phi_angle)
+    theta = np.radians(jet_theta_angle)
+    # jet vector in observers frame
+    vecjet = np.vstack([np.ones(vec.shape[1]) * np.cos(phi) *np.sin(theta),
+        np.ones(vec.shape[1]) * np.sin(phi) *np.sin(theta),
+        np.ones(vec.shape[1]) * np.cos(theta)])
+
+    # angle between jet axis and initial momentum
+    cosangle = np.sum(vecjet * -vec, axis = 0)
+
+    # restrict to those photons inside cone
+    return cosangle >= np.cos(np.radians(jet_opening_angle))
+
+
+
 def setRz(phi):
     """Rotation matrix around z axis"""
     Rz = np.zeros((phi.size,3,3))

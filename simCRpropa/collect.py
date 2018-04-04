@@ -19,6 +19,7 @@ from copy import deepcopy
 from glob import glob
 from astropy.table import Table
 from astropy.io import fits
+from astropy.cosmology import FlatLambdaCDM
 from astropy import units as u
 from collections import OrderedDict
 from simCRpropa import rotations as rot
@@ -350,7 +351,7 @@ def stack_results_lso(infile, outfile, **kwargs):
     kwargs.setdefault('dgrp', 'simEM')
     kwargs.setdefault('entries', ['E0','E','D','X','Px','P0x','ID','ID1'])
     kwargs.setdefault('entries_stack', ['X','Px','P0x'])
-    kwargs.setdefault('entries_save', ['E0','E','dt','dtheta','Protsph','ID','ID1'])
+    kwargs.setdefault('entries_save', ['E0','E','dt','Protsph','ID','ID1'])
     combined = h5py.File(infile, 'r+')
     config = yaml.load(combined[kwargs['dgrp']].attrs['config'])
 
@@ -387,60 +388,62 @@ def stack_results_lso(infile, outfile, **kwargs):
 
     # rotate positional vectors 
     logging.info("Calculating vector rotations and " \
-                "applying cuts for jet axis and observer (not implemented yet) ...")
-    rs = rot.car2sph(data['X'])
-    ps = rot.car2sph(data['Px'])
+                "applying cuts for jet axis and observer ...")
 
-    data['P0sph'] = rot.car2sph(data['P0x'])
-    data['Psph'] = rot.car2sph(data['Px'])
-    data['Xsph'] = rot.car2sph(data['X'])
+    # unit vector to observer
+    xx0norm = (data['X'] - data['X0']) / np.linalg.norm(data['X'] - data['X0'], axis = 0)
+    # project momentum vector into observer's coordinate system
+    pnew = rot.project2observer(data['Px'], xx0norm, axis = 0)
+    # get pnew in spherical coordinates
+    pnewsph = rot.car2sph(-pnew)
+    # project initial momentum vector into observer's coordinate system
+    p0new = rot.project2observer(data['P0x'], xx0norm, axis = 0)
+    # Calculate the mask for initial momentum 
+    # vectors given jet observation and opening angle
+    mask = rot.projectjetaxis(p0new,
+        jet_opening_angle=kwargs['theta_jet'],
+        jet_theta_angle= kwargs['theta_obs'],
+        jet_phi_angle= 0.)
 
-    data['Protsph'] = rot.car2sph(np.matmul(rot.setRyRz(rs[2]-np.pi/2.,-rs[1]),
-                     data['Px'].T[...,np.newaxis])[...,0].T)
-    data['Xrotsph'] = rot.car2sph(np.matmul(rot.setRyRz(rs[2]-np.pi/2.,-rs[1]),
-                     data['X'].T[...,np.newaxis])[...,0].T)
-    # compute some cuts for off-axis observer and jet axis
-    # jet along x-axis
-    cjet = SkyCoord(0.,0., unit = 'deg', frame = 'galactic') 
-    # separation between injectd direction
-    # and jet axis
-    c0 = SkyCoord(data['P0sph'][1], data['P0sph'][2] - np.pi / 2.,
-        unit = 'rad', frame = 'galactic')
-    sep_jet = cjet.separation(c0).value # separation in degrees
-    m = sep_jet <= kwargs['theta_jet']
-    # TODO: implement off-axis cuts
+    data['Protsph'] = np.vstack([pnewsph[0,:],
+                                np.rad2deg(pnewsph[2,:] * np.sin(pnewsph[1,:])),
+                                np.rad2deg(pnewsph[2,:] * np.cos(pnewsph[1,:])) + 90.
+                                ])
+
     logging.info("Done.")
 
     # compute time delay in years
     logging.info("Calculating time delay and angular separation...")
-    Dsource = crpropa.redshift2ComovingDistance(config['Source']['z']) * u.m.to('Mpc')
+    try:
+        Dsource = crpropa.redshift2ComovingDistance(config['Source']['z']) * u.m.to('Mpc')
+    except:
+        # standards in CRPropa, see
+        # https://github.com/CRPropa/CRPropa3/blob/master/include/crpropa/Cosmology.h
+        cosmo = FlatLambdaCDM(H0 = 67.3, Om0 = 0.315)
+        Dsource = cosmo.comoving_distance(config['Source']['z']).value # in Mpc
     data['dt'] = (data['D'] - Dsource) 
     data['dt'] *= (u.Mpc.to('m') * u.m / c.c).to('yr').value
-
-    # compute angular distance from observer in degrees
-    # TODO: probably this needs to be changed for off-axis observer
-    coo = SkyCoord(0.,0., unit = 'deg', frame = 'galactic')
-    cr = SkyCoord(data['Protsph'][1], data['Protsph'][2] - np.pi / 2.,
-            unit = 'rad', frame = 'galactic')
-    # separation in degrees
-    data['dtheta'] = coo.separation(cr).value
-    logging.info("Done.")
-
 
     # save to an hdf5 file
     logging.info("Saving {0} to {1:s}...".format(kwargs['entries_save'], outfile))
     for k in kwargs['entries_save']:
         if k in grp.keys(): # overwrite group if already exists
             del grp[k]
-        if k.find('ID') >= 0:
+        if 'ID' in k:
             dtype = 'i8'
         else:
             dtype ='f8'
-        grp.create_dataset(k, dtype = dtype,
-            data = data[k], compression="gzip")
+
+        if k == 'Protsph':
+            grp.create_dataset(k, dtype = dtype,
+                data = data[k][:,mask], compression="gzip")
+        else:
+            grp.create_dataset(k, dtype = dtype,
+                data = data[k][mask], compression="gzip")
     h.close()
     logging.info("Done.")
 
+    data['mask'] = mask
     return data,config
 
 class EMHist(object):
