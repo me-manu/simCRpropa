@@ -132,9 +132,13 @@ def combine_output(outfile, overwrite = False):
                 if len(f[k].shape) == 1:
                     if i and (k == 'simEM/intspec/Ecen' or k == 'simEM/intspec/weights'):
                         continue
-                    combined[k][where_to_start_appending[k]:where_to_start_appending[k] + f[k].shape[0]] = \
-                        f[k][()] * len(ff) if k == 'simEM/intspec/weights' else f[k]
-                    where_to_start_appending[k] += f[k].shape[0]
+                    try:
+                        combined[k][where_to_start_appending[k]:where_to_start_appending[k] + f[k].shape[0]] = \
+                            f[k][()] * len(ff) if k == 'simEM/intspec/weights' else f[k]
+                        where_to_start_appending[k] += f[k].shape[0]
+                    except IOError:
+                        logging.error("There was a problem (IOError) with {0:s}\nContinuing with next file".format(fi))
+                        continue
                 elif len(f[k].shape) == 2:
                     combined[k][:,where_to_start_appending[k]:where_to_start_appending[k] + f[k].shape[1]] = f[k]
                     where_to_start_appending[k] += f[k].shape[1]
@@ -230,8 +234,15 @@ def convertOutput2Hdf5(names, units, data, weights, hfile,
             dtype ='f8'
 
         if not useSpectrum:
-            EeVbins = np.logspace(np.log10(config['Source']['Emin']),
-                np.log10(config['Source']['Emax']), config['Source']['Esteps'])
+            if type(config['Source']['Emin']) == float or type(config['Source']['Emin']) == np.float:
+                EeVbins = np.logspace(np.log10(config['Source']['Emin']),
+                    np.log10(config['Source']['Emax']), config['Source']['Esteps'])
+
+            elif type(config['Source']['Emin']) == list or type(config['Source']['Emin']) == tuple \
+                or type(config['Source']['Emin']) == np.ndarray:
+
+                EeVbins = np.append(config['Source']['Emin'], config['Source']['Emax'][-1])
+
             e0i = names.index('E0') # index of injected energy
             Ecen = np.unique(data[:,e0i])
             grp.create_group(n)
@@ -391,7 +402,10 @@ def stack_results_lso(infile, outfile, **kwargs):
                 "applying cuts for jet axis and observer ...")
 
     # unit vector to observer
-    xx0norm = (data['X'] - data['X0']) / np.linalg.norm(data['X'] - data['X0'], axis = 0)
+    try:
+        xx0norm = (data['X'] - data['X0']) / np.linalg.norm(data['X'] - data['X0'], axis = 0)
+    except KeyError:
+        xx0norm = (data['X']) / np.linalg.norm(data['X'], axis = 0)
     # project momentum vector into observer's coordinate system
     pnew = rot.project2observer(data['Px'], xx0norm, axis = 0)
     # get pnew in spherical coordinates
@@ -457,6 +471,7 @@ class EMHist(object):
                     phi, theta, idobs, id1, bins,injected ,
                     idinj  = 22 , iddetection= 22, steps = 10,
                     degperpix = 0.04,
+                    tbinslog = True,
                     config = None):
         """
         Create the histogram
@@ -495,6 +510,8 @@ class EMHist(object):
             steps for integration of intrinsic spectrum (default: 10)
         degperpix: float
             assumed pixelization of skymaps
+        tbinslog: bool
+            if true, time bins considered to be log spaced
         """
         self.__degperpix = degperpix
         self._injected = injected
@@ -552,8 +569,9 @@ class EMHist(object):
         # get the central bin values
         # for all bins of the cascade spectrum
         self._cen = []
+        imax = 3 if tbinslog else 2
         for i,edge in enumerate(self._edges_casc):
-            if i < 3: # log bins
+            if i < imax: # log bins
                 self._cen.append(np.sqrt(edge[:-1] * edge[1:]))
             else: # lin bins
                 self._cen.append(0.5 * (edge[:-1] + edge[1:]))
@@ -564,6 +582,13 @@ class EMHist(object):
         for i,edge in enumerate(self._edges_prim):
             self._cen_prim.append(np.sqrt(edge[:-1] * edge[1:]))
 
+        # build an array for the volume elements
+        vol = np.meshgrid(*[np.diff(b) for b in self._edges_casc], indexing = 'ij')
+        self._volcube_casc = np.array(vol)
+
+        vol = np.meshgrid(*[np.diff(b) for b in self._edges_prim], indexing = 'ij')
+        self._volcube_prim = np.array(vol)
+
         # 2d array for integration of injected energy
         self._einj = []
         for i,emin in enumerate(self._edges_prim[0][:-1]):
@@ -571,11 +596,14 @@ class EMHist(object):
                         np.log10(self._edges_prim[0][i+1]), steps))
         self._einj = np.array(self._einj)
 
-        self._weights = np.ones_like(self._cen_prim[0])
+        self._weights_inj = injected[1]
+        self._weights = np.ones_like(self._weights_inj)
         return
 
     @staticmethod
-    def gen_from_hd5f(infile, dgrp = 'simEM', roiradius = 3., ebins = 41, degperpix = 0.04):
+    def gen_from_hd5f(infile, dgrp = 'simEM', roiradius = 3., numebins = 41, degperpix = 0.04, 
+                        tbins = None, tbinslog = True):
+
         """
         Generate Histrogram from hd5f file
         Bin boundaries are set automatically
@@ -597,6 +625,10 @@ class EMHist(object):
             with of each pixel in degree for resulting histogram
             which will be used for phi and theta binning
             (default: 0.04, motivated from minimum CTA PSF)
+        tbins: None or `~numpy.ndarray`
+            bins for time delay, default: None
+        tbinslog: bool
+            if true, time bins considered to be log spaced
         """
         hfile = h5py.File(infile, 'r+')
         data = hfile[dgrp]
@@ -610,15 +642,17 @@ class EMHist(object):
         # observed energy bins
         bins.append( np.logspace(np.log10(data['E'][()].min()),
                     np.log10(data['E'][()].max()),
-                    ebins))
+                    numebins))
         # time delay
-        tmin = np.max([0.1,data['dt'][()].min()])
+        if type(tbins) == type(None):
 
-        bins.append( np.concatenate([[tmin,3.],
+            tmin = np.max([0.1,data['dt'][()].min()])
+            bins.append( np.concatenate([[tmin,3.],
                     np.logspace(1.,7,7)]) )
-
-        if bins[-1][-1] < data['dt'][()].max():
-            bins[-1] = np.concatenate([bins[-1],[data['dt'][()].max()]])
+            if bins[-1][-1] < data['dt'][()].max():
+                bins[-1] = np.concatenate([bins[-1],[data['dt'][()].max()]])
+        else:
+            bins.append( tbins )
 
         # angular separation 
         #bins.append( np.concatenate([[data['dtheta'][()].min()],
@@ -638,8 +672,8 @@ class EMHist(object):
         E = data['E'][()]
         dt = data['dt'][()]
         #dtheta = data['dtheta'][()]
-        phi = np.degrees(data['Protsph'][1,:])
-        theta = np.degrees(data['Protsph'][2,:])
+        phi = data['Protsph'][1,:]
+        theta = data['Protsph'][2,:]
         idobs = data['ID'][()]
         id1 = data['ID1'][()]
 
@@ -651,6 +685,7 @@ class EMHist(object):
                     phi,theta,idobs,id1,
                     bins, idinj  = config['Source']['Composition'],
                     iddetection= 22, config = config, injected = injected,
+                    tbinslog = tbinslog,
                     degperpix = degperpix)
 
     @property
@@ -743,8 +778,16 @@ class EMHist(object):
         # flux of new injected spectrum integrated in 
         # bins of injected spectrum
         Finj = simps(injspec(self._einj) * self._einj, np.log(self._einj), axis = 1)
-        self._weights = Finj / self._injected[1]
+        self._weights = Finj / self._weights_inj
         return 
+
+    def apply_weights(self):
+        dNcasc_dEtrue_dEobs_dt_dphi_dtheta = (self._hist_casc.T * self._weights).T / \
+            np.product(self._volcube_casc, axis = 0)
+        dNprim_dEtrue_dEobs = (self._hist_prim.T * self._weights).T / \
+            np.product(self._volcube_prim, axis = 0)
+
+        return dNcasc_dEtrue_dEobs_dt_dphi_dtheta, dNprim_dEtrue_dEobs
 
     def obsspec1D(self, mEinj = [0.,np.nan],
                         mdt = [0.,np.nan],
@@ -755,7 +798,7 @@ class EMHist(object):
         Return the observed energy spectrum with cuts 
         along axes applied
         """
-        cut = (self._hist_casc.T * self._weights).T
+        cut = self.apply_weights()[0]
         if np.all(np.isfinite(mtheta)):
             cut = self._hist_casc[...,(self._cen[-1] >= mtheta[0]) & (self._cen[-1] < mtheta[1])]
 
@@ -937,8 +980,8 @@ class CRHist(object):
                 E = data['E'][()]
                 dt = data['dt'][()]
                 #dtheta = data['dtheta'][()]
-                phi = np.degrees(data['Protsph'][1,:])
-                theta = np.degrees(data['Protsph'][2,:])
+                phi = data['Protsph'][1,:]
+                theta = data['Protsph'][2,:]
                 idobs = data['ID'][()]
                 weights = data['intspec/weights'][()]
             else:
@@ -952,8 +995,8 @@ class CRHist(object):
                 E = np.concatenate([E,data['E'][()]])
                 E0 = np.concatenate([E0,data['E0'][()]])
                 dt = np.concatenate([dt,data['dt'][()]])
-                phi = np.concatenate([phi,np.degrees(data['Protsph'][1,:])])
-                theta = np.concatenate([theta,np.degrees(data['Protsph'][2,:])])
+                phi = np.concatenate([phi,data['Protsph'][1,:]])
+                theta = np.concatenate([theta,data['Protsph'][2,:]])
                 idobs = np.concatenate([idobs,data['ID'][()]])
                 weights = np.concatenate([weights,data['intspec/weights'][()]])
 
@@ -1079,7 +1122,10 @@ class CRHist(object):
         Return the observed energy spectrum with cuts 
         along axes applied
         """
-        cut = (self._hist_casc.T * self._weights).T
+        if apply_weights:
+            cut = (self._hist_casc.T * self._weights).T
+        else:
+            cut = self._hist_casc
 
         if np.all(np.isfinite(mtheta)):
             cut = self._hist_casc[...,(self._cen[-1] >= mtheta[0]) & (self._cen[-1] < mtheta[1])]
@@ -1116,6 +1162,10 @@ class EMMap(object):
     Class for creation and manipulation 
     of N-dim gammapy WCS map with CRPropa output for electromagnetic 
     cascade and histogram for intrinsic spectrum
+
+    Use this if the temporal information is not important 
+    and you only care about the emission that has arrived 
+    at Earth with a delay < tmax.
     """
     def __init__(self, values, edges, skycoord,
                     injected = None, 
@@ -1383,8 +1433,8 @@ class EMMap(object):
         values['Etrue'] = data['E0'][()]
         values['Eobs'] = data['E'][()]
         values['t_delay'] = data['dt'][()]
-        values['lon'] = np.degrees(data['Protsph'][1,:])
-        values['lat'] = np.degrees(data['Protsph'][2,:])
+        values['lon'] = data['Protsph'][1,:]
+        values['lat'] = data['Protsph'][2,:]
         values['idobs'] = data['ID'][()]
         values['id1'] = data['ID1'][()]
 

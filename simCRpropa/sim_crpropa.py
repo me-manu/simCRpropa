@@ -4,12 +4,13 @@ import yaml
 import numpy as np
 import argparse
 from os import path
-from haloanalysis.batchfarm import utils,lsf
+from fermiAnalysis.batchfarm import utils,lsf
 from copy import deepcopy
 from glob import glob
 from astropy.table import Table
 from astropy.io import fits
 from astropy import units as u
+from astropy import constants as c
 import simCRpropa
 from simCRpropa import collect
 from collections import OrderedDict
@@ -134,7 +135,7 @@ FileIO:
     outdir: ./
 
 Simulation:
-    Nparticle: 1.e+6 # total number of particles to simulate
+    multiplicity: 100 # number of times Nbatch particles are simulated
     Nbatch: 1.e+4 # number of particles simulated in each simulation
     cpu_n: 8
 
@@ -210,22 +211,89 @@ class SimCRPropa(object):
             raise Exception("maxTurbScale type not understood: {0}".format(
                 type(self.Bfield['maxTurbScale'])))
 
-        if self.Bfield['EBL'] == 'IRB_Gilmore12':
+        if type(self.Source['th_jet']) == list:
+            self._th_jetList = deepcopy(self.Source['th_jet'])
+            self.Source['th_jet'] = self._th_jetList[0]
+        elif type(self.Bfield['maxTurbScale']) == float:
+            self._th_jetList = [self.Source['th_jet']]
+        else:
+            raise Exception("maxTurbScale type not understood: {0}".format(
+                type(self.Bfield['maxTurbScale'])))
+
+        if 'IRB_Gilmore12' in self.Bfield['EBL']:
             self._EBL = IRB_Gilmore12 #Dominguez11, Finke10, Franceschini08
-        elif self.Bfield['EBL'] == 'Dominguez11':
-            self._EBL = Dominguez11
-        elif self.Bfield['EBL'] == 'Finke10':
-            self._EBL = Finke10
-        elif self.Bfield['EBL'] == 'Franceschini08':
-            self._EBL = Franceschini08
+        elif 'Dominguez11' in self.Bfield['EBL']:
+            self._EBL = IRB_Dominguez11
+        elif 'Finke10' in self.Bfield['EBL']:
+            self._EBL = IRB_Finke10
+        elif 'Franceschini08' in self.Bfield['EBL']:
+            self._EBL = IRB_Franceschini08
         else:
             raise ValueError("Unknown EBL model chosen")
         self._URB = URB_Protheroe96
+
+        if self.Source['useSpectrum']:
+            self.nbins = 1
+        # do a bin-by-bin analysis
+        else:
+            if not type(self.Source['Emin']) == type(self.Source['Emax']) \
+                    == type(self.Simulation['Nbatch']):
+                raise TypeError("Emin, Emax, and Nbatch must be the same type")
+
+            if type(self.Source['Emin']) == float or type(self.Source['Emin']) == np.float:
+                self.EeVbins = np.logspace(np.log10(self.Source['Emin']),
+                    np.log10(self.Source['Emax']), self.Source['Esteps'])
+                self.weights = self.Simulation['Nbatch'] * \
+                            np.ones(self.EeVbins.size - 1, dtype = np.int) # weight with optical depth?
+            elif type(self.Source['Emin']) == list or type(self.Source['Emin']) == tuple \
+                or type(self.Source['Emin']) == np.ndarray:
+
+                self.Source["Emin"] = list(self.Source["Emin"])
+                self.Source["Emax"] = list(self.Source["Emax"])
+                self.Simulation["Nbatch"] = list(self.Simulation["Nbatch"])
+
+                if not len(self.Source["Emin"]) == len(self.Source["Emax"]) == \
+                    len(self.Simulation["Nbatch"]):
+                    raise TypeError("Emin, Emax, Nbatch arrays must be of same size")
+
+                self.EeVbins = np.append(self.Source["Emin"], self.Source["Emax"][-1])
+                self.weights = np.array(self.Simulation["Nbatch"])
+
+            # increase number of weights for small scale observer
+            if self.Observer['obsSmallSphere']:
+                # weight for Bfield
+                if self.Bfield['B'] > 1e-18:
+                    self.weights *= (1. + 0.1 * (np.log10(self.Bfield['B']) + 18.)**2.)
+                # weight for jet opening angle 
+                if self.Source['th_jet'] > 1.:
+                    self.weights *= (1. + 0.1 *self.Source['th_jet']**2.)
+                if self.Observer['obsAngle'] > 0.:
+                    self.weights *= (1. + 0.1 * (self.Observer['obsAngle'] + 1.))
+
+            self.weights = self.weights.astype(np.int)
+            self.EeV = np.sqrt(self.EeVbins[1:] * self.EeVbins[:-1])
+            self.nbins = self.EeV.size
+            self.Source['Energy'] = self.EeV[0]
+            logging.info("There will be {0:n} energy bins".format(self.nbins))
+            if not self.nbins:
+                raise ValueError("No energy bins requested, change Emin, Emax, or Esteps")
+
+        # set min step length for simulation 
+        # depending on min requested time resolution
+        # takes precedence over minStepLength
+        if 'minTresol' in self.Simulation.keys():
+            dt = u.Quantity(self.Simulation['minTresol'])
+            self.Simulation['minStepLength'] = (dt * c.c.to("pc / {0:s}".format(dt.unit))).value
+            logging.info("Set step length to {0:.4e} pc " \
+                         "from requsted time resolution {1}".format(self.Simulation['minStepLength'],
+                                                                    dt))
         return
 
-    def setOutput(self,jobid, idB = 0, idL = 0):
+    def setOutput(self,jobid, idB = 0, idL = 0, it = 0):
         """Set output file and directory"""
         self.OutName = 'casc_{0:05n}.dat'.format(jobid)
+
+        self.Source['th_jet'] = self._th_jetList[it]
 
         # append options to file path
         self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['basedir'],
@@ -277,10 +345,16 @@ class SimCRPropa(object):
 
         if self.Bfield['type'] == 'cell':
             logging.info('Box spacing for cell-like B field: {0:.3e} Mpc'.format(self.Bfield['maxTurbScale']))
+            gridSpacing = self.Bfield['maxTurbScale'] * Mpc
+            if self.Bfield['NBgrid'] == 0:
+                gridSize = int(np.ceil(redshift2ComovingDistance(self.Source['z'])/\
+                                                self.Bfield['maxTurbScale'] / Mpc))
+            else:
+                gridSize = self.Bfield['NBgrid']
+
             vgrid = VectorGrid(boxOrigin,
-                                int(np.ceil(redshift2ComovingDistance(self.Source['z'])/\
-                                            self.Bfield['maxTurbScale'] / Mpc)),
-                                self.Bfield['maxTurbScale'] * Mpc)
+                                gridSize,
+                                gridSpacing)
             initRandomField(vgrid, self.Bfield['B'] * gauss, seed = self.Bfield['seed'])
             self.bField = MagneticFieldGrid(vgrid)
             self.__extent = int(np.ceil(redshift2ComovingDistance(self.Source['z'])/\
@@ -397,7 +471,9 @@ class SimCRPropa(object):
         self.m = ModuleList()
         #PropagationCK (ref_ptr< MagneticField > field=NULL, double tolerance=1e-4, double minStep=(0.1 *kpc), double maxStep=(1 *Gpc))
         #self.m.add(PropagationCK(self.bField, 1e-2, 100 * kpc, 10 * Mpc))
-        self.m.add(PropagationCK(self.bField, 1e-9, 1 * pc, 10 * Mpc))
+        self.m.add(PropagationCK(self.bField, self.Simulation['tol'],
+                            self.Simulation['minStepLength'] * pc,
+                            self.Simulation['maxStepLength'] * Mpc))
         # Updates redshift and applies adiabatic energy loss according to the traveled distance. 
         #m.add(Redshift())
         # Updates redshift and applies adiabatic energy loss according to the traveled distance. 
@@ -460,11 +536,17 @@ class SimCRPropa(object):
             logging.info("Energy is greater than 1 EeV, limiting " \
                         "sensitivity due to memory. E = {0[Energy]:.3e}".format(self.Source))
             #self.m.add(PropagationCK(self.bField, 1e-6, 1 * kpc, 10 * Mpc))
-            self.m.add(PropagationCK(self.bField, 1e-4, 10. * kpc, 10 * Mpc))
+            self.m.add(PropagationCK(self.bField, np.max([1e-4, self.Simulation['tol']]),
+                       self.Simulation['minStepLength'] * pc,
+                       self.Simulation['maxStepLength'] * Mpc))
         else:
-            self.m.add(PropagationCK(self.bField, 1e-6, 1 * kpc, 10 * Mpc))
+            self.m.add(PropagationCK(self.bField, self.Simulation['tol'],
+                       self.Simulation['minStepLength'] * pc,
+                       self.Simulation['maxStepLength'] * Mpc))
             # this takes about a factor of five longer:
             #self.m.add(PropagationCK(self.bField, 1e-9, 1 * pc, 10 * Mpc))
+            # than this:
+            #self.m.add(PropagationCK(self.bField, 1e-6, 1 * kpc, 10 * Mpc))
         # Updates redshift and applies adiabatic energy loss according to the traveled distance. 
         #m.add(Redshift())
         # Updates redshift and applies adiabatic energy loss according to the traveled distance. 
@@ -565,51 +647,54 @@ class SimCRPropa(object):
         **kwargs):
         """Submit simulation jobs"""
 
-        script = path.join(path.dirname(simCRpropa.__file__), 'scripts/run_crpropa_em_cascade.py')
+        script = path.join(path.abspath(path.dirname(simCRpropa.__file__)), 'scripts/run_crpropa_em_cascade.py')
+        print (script)
 
         if not path.isfile(script):
             raise IOError("Script {0:s} not found!".format(script))
 
         for ib, b in enumerate(self._bList):
             for il, l in enumerate(self._turbScaleList):
-                njobs = int(self.Simulation['Nparticle']) / int(self.Simulation['Nbatch'])
-                self.Bfield['B'] = b
-                self.Bfield['maxTurbScale'] = l
-                self.setOutput(0, idB = ib, idL = il)
+                for it, t in enumerate(self._th_jetList):
+                    njobs = int(self.Simulation['multiplicity'])
+                    self.Bfield['B'] = b
+                    self.Bfield['maxTurbScale'] = l
+                    self.Source['th_jet'] = t
+                    self.setOutput(0, idB = ib, idL = il, it = it)
 
-                outfile = path.join(self.FileIO['outdir'],self.OutName.split('_')[0] + '*.hdf5')
-                missing = utils.missing_files(outfile,njobs, split = '.hdf5')
-                self.config['Simulation']['n_cpu'] = kwargs['n']
+                    outfile = path.join(self.FileIO['outdir'],self.OutName.split('_')[0] + '*.hdf5')
+                    missing = utils.missing_files(outfile,njobs, split = '.hdf5')
+                    self.config['Simulation']['n_cpu'] = kwargs['n']
 
 
-                if len(missing) < njobs:
-                    logging.debug('here {0}'.format(njobs))
-                    njobs = missing
-                    logging.info('there are {0:n} files missing in {1:s}'.format(len(missing),
-                    outfile ))
+                    if len(missing) < njobs:
+                        logging.debug('here {0}'.format(njobs))
+                        njobs = missing
+                        logging.info('there are {0:n} files missing in {1:s}'.format(len(missing),
+                        outfile ))
 
-                if len(missing) and not force_combine:
-                    self.config['configname'] = 'r'
-                    kwargs['logdir'] = path.join(self.FileIO['outdir'],'log/')
-                    kwargs['tmpdir'] = path.join(self.FileIO['outdir'],'tmp/')
-                    kwargs['jname'] = 'b{0:.0f}l{1:.0f}'.format(np.log10(b),np.log10(l))
-                    lsf.submit_lsf(script,
-                        self.config,'',njobs, 
-                        **kwargs)
-                else:
-                    if len(missing) and force_combine:
-                        logging.info("There are files missing but combining anyways.")
+                    if len(missing) and not force_combine:
+                        self.config['configname'] = 'r'
+                        kwargs['logdir'] = path.join(self.FileIO['outdir'],'log/')
+                        kwargs['tmpdir'] = path.join(self.FileIO['outdir'],'tmp/')
+                        kwargs['jname'] = 'b{0:.2f}l{1:.2f}'.format(np.log10(b),np.log10(l))
+                        lsf.submit_lsf(script,
+                            self.config,'',njobs, 
+                            **kwargs)
                     else:
-                        logging.info("All files present.")
+                        if len(missing) and force_combine:
+                            logging.info("There are files missing but combining anyways.")
+                        else:
+                            logging.info("All files present.")
 
-                    ffdat = glob(path.join(path.dirname(outfile),path.basename(outfile).split('.hdf5')[0] + '.dat'))
-                    if len(ffdat):
-                        logging.info("Deleting *.dat files.")
-                        for f in ffdat:
-                            utils.rm(f)
+                        ffdat = glob(path.join(path.dirname(outfile),
+                                               path.basename(outfile).split('.hdf5')[0] + '.dat'))
+                        if len(ffdat):
+                            logging.info("Deleting *.dat files.")
+                            for f in ffdat:
+                                utils.rm(f)
 
-
-                    collect.combine_output(outfile, overwrite = overwrite)
+                        collect.combine_output(outfile, overwrite = overwrite)
         return
 
 @lsf.setLsf
@@ -639,7 +724,7 @@ def main(**kwargs):
     sim = SimCRPropa(**config)
     sim.run(overwrite = bool(args.overwrite),
         force_combine = bool(args.force_combine), **kwargs)
-    return
+    return sim
 
 if __name__ == '__main__':
-    main()
+    sim = main()
