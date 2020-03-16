@@ -439,8 +439,8 @@ class SimCRPropa(object):
             # emission cone towards positiv x-axis
             self.source.add(SourceEmissionCone(
                 Vector3d(np.cos(np.radians(self.Observer['obsAngle'])), 
-                    np.sin(np.radians(self.Observer['obsAngle'])), 0), 
-                np.radians(self.Source['th_jet'])))
+                         np.sin(np.radians(self.Observer['obsAngle'])), 0), 
+                         np.radians(self.Source['th_jet'])))
         # SourceParticleType takes int for particle ID. 
         # for a nucleus with A,Z you can use nucleusId(int a, int z) function
         # other IDs are given in http://pdg.lbl.gov/2016/reviews/rpp2016-rev-monte-carlo-numbering.pdf

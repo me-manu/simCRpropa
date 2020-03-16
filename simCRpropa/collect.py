@@ -69,10 +69,16 @@ def combine_output(outfile, overwrite = False):
             logging.error("There was a problem with {0:s}\nContinuing with next file".format(fi))
             continue
 
+        if isinstance(conf['Source']['Emin'], float):
+            esteps = conf['Source']['Esteps'] - 1
+        elif isinstance(conf['Source']['Emin'], list) or isinstance(conf['Source']['Emin'], tuple) or \
+            isinstance(conf['Source']['Emin'], np.ndarray):
+            esteps = len(conf['Source']['Emin'])
+
         for name in f['simEM']:                                                                        
             # check if number of bins is correct
             if not 'weights' in f['simEM'][name].keys():
-                if not len(f['simEM'][name].keys()) == conf['Source']['Esteps'] - 1:
+                if not len(f['simEM'][name].keys()) == esteps:
                     logging.error("Energy bins missing in {0:s}".format(fi))
                     skipped = True
                     skipped_files.append(i)
@@ -262,6 +268,7 @@ def convertOutput2Hdf5(names, units, data, weights, hfile,
                 # no such injected energy in output file
                 # create an empty data set
                 else:
+                    logging.warning("No particles with injected energy {0:.3e} found!".format(E))
                     grp[n].create_dataset("Ebin{0:03n}".format(j), dtype = dtype,
                                         data = [], compression="gzip")
 

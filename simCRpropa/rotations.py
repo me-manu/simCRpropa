@@ -90,7 +90,10 @@ def projectjetaxis(vec, jet_opening_angle = 5.,
     cosangle = np.sum(vecjet * -vec, axis = 0)
 
     # restrict to those photons inside cone
-    return cosangle >= np.cos(np.radians(jet_opening_angle))
+    #return cosangle >= np.cos(np.radians(jet_opening_angle))
+# should be max half jet opening angle
+# TODO check this again
+    return cosangle >= np.cos(np.radians(jet_opening_angle/2.))
 
 
 
