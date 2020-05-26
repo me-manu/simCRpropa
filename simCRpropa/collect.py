@@ -6,29 +6,17 @@ from CRPropa simulations
 import logging
 import yaml
 import numpy as np
-import argparse
-import simCRpropa
 import h5py
 try:
     from crpropa import *
 except:
     pass
 from os import path
-from fermiAnalysis.batchfarm import utils,lsf
-from copy import deepcopy
+from fermiAnalysis.batchfarm import utils, lsf
 from glob import glob
-from astropy.table import Table
-from astropy.io import fits
-from astropy.cosmology import FlatLambdaCDM
-from astropy import units as u
-from collections import OrderedDict
-from simCRpropa import rotations as rot
-from astropy.coordinates import SkyCoord
-import astropy.units as u
 from scipy.integrate import simps
-import astropy.constants as c
-from gammapy.maps import Map, MapCoord, MapAxis
 from collections import OrderedDict
+
 
 def combine_output(outfile, overwrite = False):
     """
@@ -330,142 +318,6 @@ def readCRPropaOutput(filename):
 
     return names, units, data
 
-def stack_results_lso(infile, outfile, **kwargs):
-    """
-    Stack the results of bin-by-bin simulations
-    for simulations with a large sphere observer
-    and combine them into arrays for injected energy, 
-    observed energy, time delay, angular separation, sky coordinates, 
-    and particle ID
-
-    Parameters
-    ----------
-    infile: str
-        path to input hdf5 file
-    outfile: str
-        path to output hdf5 file
-
-    {options}
-
-    theta_jet: float
-        jet opening angle in deg  (default: 5.)
-    theta_obs: float
-        angle in deg between observer and jet axis (default: 0. deg)
-    dgrp: str
-        name of hdf5 group where data is stored (default: 'simEM')
-    entries: list of str
-        list of parameters that will be combined (default: [E0,E,D,X,Px,P0x,ID,ID1])
-    entries_stack: list of str
-        entries that will be stacked (instead of concatenated, default: [X,Px,P0x])
-    entries_save: list of str
-        entries that will saved (default: [E0,E,dt,dtheta,Protsph,ID,ID1])
-
-    Returns
-    -------
-    List of dictionaries with `~numpy.ndarray`s that contain the data and configuration
-    """
-    kwargs.setdefault('theta_jet', 5.)
-    kwargs.setdefault('theta_obs', 0.)
-    kwargs.setdefault('dgrp', 'simEM')
-    kwargs.setdefault('entries', ['E0','E','D','X','Px','P0x','ID','ID1'])
-    kwargs.setdefault('entries_stack', ['X','Px','P0x'])
-    kwargs.setdefault('entries_save', ['E0','E','dt','Protsph','ID','ID1'])
-    combined = h5py.File(infile, 'r+')
-    config = yaml.load(combined[kwargs['dgrp']].attrs['config'])
-
-    # init hdf5 file
-    h = h5py.File(outfile, 'a')
-    if kwargs['dgrp'] in h.keys(): # overwrite group if already exists
-        del h[kwargs['dgrp']]
-    grp = h.create_group(kwargs['dgrp'])
-    grp.attrs["config"] = yaml.safe_dump(config,default_flow_style=False)
-
-    data = {}
-    # combine the data from all energy bins
-    logging.info("Combining data from all energy bins ...")
-    for ie in range(config['Source']['Esteps']-1):
-        eb = 'Ebin{0:03n}'.format(ie)
-        for k in kwargs['entries']:
-            ki = 'simEM/{1:s}/{0:s}'.format(eb,k)
-
-            if not ie:
-                data[k] = combined[ki][()]
-            else:
-                if k in kwargs['entries_stack']:
-                    data[k] = np.hstack([data[k],
-                                combined[ki][()]])
-                else:
-                    data[k] = np.concatenate([data[k],
-                                combined[ki][()]])
-    for k in ['intspec/Ecen' ,'intspec/weights']:
-        logging.info("Saving {0} to {1:s}...".format(k, outfile))
-        grp.create_dataset(k, data = combined['simEM/' + k],
-            dtype = combined['simEM/' + k].dtype, compression = "gzip")
-    combined.close()
-    logging.info("Done.")
-
-    # rotate positional vectors 
-    logging.info("Calculating vector rotations and " \
-                "applying cuts for jet axis and observer ...")
-
-    # unit vector to observer
-    try:
-        xx0norm = (data['X'] - data['X0']) / np.linalg.norm(data['X'] - data['X0'], axis = 0)
-    except KeyError:
-        xx0norm = (data['X']) / np.linalg.norm(data['X'], axis = 0)
-    # project momentum vector into observer's coordinate system
-    pnew = rot.project2observer(data['Px'], xx0norm, axis = 0)
-    # get pnew in spherical coordinates
-    pnewsph = rot.car2sph(-pnew)
-    # project initial momentum vector into observer's coordinate system
-    p0new = rot.project2observer(data['P0x'], xx0norm, axis = 0)
-    # Calculate the mask for initial momentum 
-    # vectors given jet observation and opening angle
-    mask = rot.projectjetaxis(p0new,
-        jet_opening_angle=kwargs['theta_jet'],
-        jet_theta_angle= kwargs['theta_obs'],
-        jet_phi_angle= 0.)
-
-    data['Protsph'] = np.vstack([pnewsph[0,:],
-                                np.rad2deg(pnewsph[2,:] * np.sin(pnewsph[1,:])),
-                                np.rad2deg(pnewsph[2,:] * np.cos(pnewsph[1,:])) + 90.
-                                ])
-
-    logging.info("Done.")
-
-    # compute time delay in years
-    logging.info("Calculating time delay and angular separation...")
-    try:
-        Dsource = crpropa.redshift2ComovingDistance(config['Source']['z']) * u.m.to('Mpc')
-    except:
-        # standards in CRPropa, see
-        # https://github.com/CRPropa/CRPropa3/blob/master/include/crpropa/Cosmology.h
-        cosmo = FlatLambdaCDM(H0 = 67.3, Om0 = 0.315)
-        Dsource = cosmo.comoving_distance(config['Source']['z']).value # in Mpc
-    data['dt'] = (data['D'] - Dsource) 
-    data['dt'] *= (u.Mpc.to('m') * u.m / c.c).to('yr').value
-
-    # save to an hdf5 file
-    logging.info("Saving {0} to {1:s}...".format(kwargs['entries_save'], outfile))
-    for k in kwargs['entries_save']:
-        if k in grp.keys(): # overwrite group if already exists
-            del grp[k]
-        if 'ID' in k:
-            dtype = 'i8'
-        else:
-            dtype ='f8'
-
-        if k == 'Protsph':
-            grp.create_dataset(k, dtype = dtype,
-                data = data[k][:,mask], compression="gzip")
-        else:
-            grp.create_dataset(k, dtype = dtype,
-                data = data[k][mask], compression="gzip")
-    h.close()
-    logging.info("Done.")
-
-    data['mask'] = mask
-    return data,config
 
 class EMHist(object):
     """
@@ -1164,47 +1016,47 @@ class CRHist(object):
 
         return cut.sum(axis = (0,2))
 
-class EMMap(object):
+class emmap(object):
     """
-    Class for creation and manipulation 
-    of N-dim gammapy WCS map with CRPropa output for electromagnetic 
+    class for creation and manipulation
+    of n-dim gammapy wcs map with crpropa output for electromagnetic
     cascade and histogram for intrinsic spectrum
 
-    Use this if the temporal information is not important 
-    and you only care about the emission that has arrived 
-    at Earth with a delay < tmax.
+    use this if the temporal information is not important
+    and you only care about the emission that has arrived
+    at earth with a delay < tmax.
     """
     def __init__(self, values, edges, skycoord,
-                    injected = None, 
+                    injected = none,
                     idinj  = 22,
-                    iddetection= 22, config = None,
+                    iddetection= 22, config = none,
                     tmax = 1e6,
                     steps = 10,
                     binsz = 0.04, width = 6.):
         """
-        Create the histogram
+        create the histogram
 
-        Parameters
+        parameters
         ----------
         values: dict
-            dictionary with values of CRPropa simulation
-        edges: dict 
+            dictionary with values of crpropa simulation
+        edges: dict
             dictionary with bin edges
-        skycoord: `~astropy.coordinates.SkyCoord` object
-            Sky coordinates for observation
+        skycoord: `~astropy.coordinates.skycoord` object
+            sky coordinates for observation
 
         {options}
 
         tmax : float
             maximally allowed time delay in years (default: 1e6)
         injected: `~numpy.ndarray`
-            (2xN) dim array with the central energies and counts of 
+            (2xn) dim array with the central energies and counts of
             injected particles
         idinj: int
-            particle ID of injected particles
+            particle id of injected particles
             (used to determine if particle is produced in cascade, default: 22)
         iddetection: int
-            particle ID for detected particle
+            particle id for detected particle
             (veto against other particles, default: 22)
         steps: int
             steps for integration of intrinsic spectrum (default: 10)
@@ -1212,16 +1064,16 @@ class EMMap(object):
             assumed pixelization of skymaps in degrees / pix
         width: float
             assumed width of skymaps in degrees
-        config: dict or None
-            simulation dict 
+        config: dict or none
+            simulation dict
         """
 
-        self._centers = OrderedDict()
-        self._widths = OrderedDict()
+        self._centers = ordereddict()
+        self._widths = ordereddict()
         self._edges = edges
         self._skycoord = skycoord
         self._binsz = binsz
-        self._roiwidth = width 
+        self._roiwidth = width
 
         # get the central bin values
         # for all bins of the cascade spectrum
@@ -1241,75 +1093,75 @@ class EMMap(object):
         # injected spectrum condition
         self._mi = (values['idobs']== iddetection) & (values['id1'] == idinj)
 
-        if not config == None:
+        if not config == none:
             for k,v in config.items():
                 setattr(self,k,v)
 
         # build data cube cascade
         if np.sum(self._mc):
-            keys = ['Etrue', 'Eobs', 'lon', 'lat']
+            keys = ['etrue', 'eobs', 'lon', 'lat']
             data_casc = np.array([values[k][self._mc] \
                                     for k in keys])
             edges_casc = [edges[k] for k in keys]
         else:
-            logging.error("No events pass cascade criterion")
+            logging.error("no events pass cascade criterion")
             assert np.sum(self._mc) > 0
 
-        # build data cube for primary spectrum 
+        # build data cube for primary spectrum
         if np.sum(self._mi):
-            keys = ['Etrue', 'Eobs']
+            keys = ['etrue', 'eobs']
             data_primary = np.array([values[k][self._mi] \
                                     for k in keys])
             edges_primary = [edges[k] for k in keys]
 
         else:
-            raise Exception("No events pass primary spectrum criterion")
+            raise exception("no events pass primary spectrum criterion")
 
         # build the histogram
-        logging.info("Building the cascade histogram" \
+        logging.info("building the cascade histogram" \
                         "for tmax = {0:.2e} years ...".format(tmax))
-        logging.info("Bin shapes: {0}".format([edges_casc[i].shape for i in range(len(edges_casc))]))
-        self._hist_casc, self._edges_casc = np.histogramdd(data_casc.T,bins = edges_casc)
-        logging.info("Done.")
+        logging.info("bin shapes: {0}".format([edges_casc[i].shape for i in range(len(edges_casc))]))
+        self._hist_casc, self._edges_casc = np.histogramdd(data_casc.t,bins = edges_casc)
+        logging.info("done.")
 
-        logging.info("Building the injected spectrum histogram  ...")
-        # TODO: accounted for redshift, but is it correct?
+        logging.info("building the injected spectrum histogram  ...")
+        # todo: accounted for redshift, but is it correct?
         if np.sum(self._mi):
             if type(config) == dict:
                 # bins[0] contain the injected energies
                 # bins[0] / ( 1 + z) are the observed energies
-                self._hist_prim, self._edges_prim = np.histogramdd(data_primary.T,
+                self._hist_prim, self._edges_prim = np.histogramdd(data_primary.t,
                                             bins = (edges_primary[0],
-                                                    edges_primary[0] / (1. + self.Source['z'])))
+                                                    edges_primary[0] / (1. + self.source['z'])))
             else:
-                self._hist_prim, self._edges_prim = np.histogramdd(data_primary.T,
+                self._hist_prim, self._edges_prim = np.histogramdd(data_primary.t,
                                                         bins = (edges_primary[0],edges_primary[1]))
-            self._centers['Eobs_prim'] = np.sqrt(self._edges_prim[1][1:] * \
+            self._centers['eobs_prim'] = np.sqrt(self._edges_prim[1][1:] * \
                                     self._edges_prim[1][:-1] )
-            self._widths['Eobs_prim'] = np.diff(self._edges_prim[1])
+            self._widths['eobs_prim'] = np.diff(self._edges_prim[1])
 
         else:
-            raise Exception("No events pass primary spectrum criterion")
-        logging.info("Done.")
+            raise exception("no events pass primary spectrum criterion")
+        logging.info("done.")
 
         # build the maps
-        eobs_casc_axis = MapAxis.from_edges(edges['Eobs'],
-                            interp='log', name = 'Eobs')
-        self._casc_map = Map.create(binsz = binsz, width = width,
+        eobs_casc_axis = mapaxis.from_edges(edges['eobs'],
+                            interp='log', name = 'eobs')
+        self._casc_map = map.create(binsz = binsz, width = width,
                                 skydir = skycoord,
                                 axes = [eobs_casc_axis])
 
-        # create a map in which each pixel 
+        # create a map in which each pixel
         # contains the volume of the pixel
-        self._vol_map = Map.create(binsz = binsz, width = width,
+        self._vol_map = map.create(binsz = binsz, width = width,
                                 skydir = skycoord,
                                 axes = [eobs_casc_axis])
-        self._solid_angle = Map.create(binsz = binsz, width = width,
+        self._solid_angle = map.create(binsz = binsz, width = width,
                                 skydir = skycoord,
                                 axes = [eobs_casc_axis])
 
         # create a map with angular separations
-        self._sep_map = Map.create(
+        self._sep_map = map.create(
                 binsz=binsz,
                 map_type='wcs',
                 width=width,
@@ -1317,16 +1169,16 @@ class EMMap(object):
 
         # fill the map with the separation from center
         lon, lat = self._sep_map.geom.get_coord()
-        c = SkyCoord(lon, lat, unit = 'deg', frame = skycoord.frame)
+        c = skycoord(lon, lat, unit = 'deg', frame = skycoord.frame)
         sep = skycoord.separation(c).value
         self._sep_map.set_by_coord((lon,lat), sep)
 
-        we, wlon, wlat = np.meshgrid(self._widths['Eobs'],
+        we, wlon, wlat = np.meshgrid(self._widths['eobs'],
                             np.radians(self._widths['lon']),
                             np.radians(self._widths['lat']),
                             indexing = 'ij')
 
-        # volume map in units of sr * eV
+        # volume map in units of sr * ev
         self._vol_map.set_by_idx(self._vol_map.geom.get_idx(),
                                     we * wlon * wlat)
 
@@ -1335,20 +1187,20 @@ class EMMap(object):
                                     wlon * wlat)
 
         # fill the cascade map
-        # make it in units photons / s / cm^2 / eV / sr
+        # make it in units photons / s / cm^2 / ev / sr
         # s and cm^2 come from weights later
         il, ib, ie = self._casc_map.geom.get_idx()
         self._casc_map.set_by_idx(self._casc_map.geom.get_idx(),
                                 self._hist_casc.sum(axis = 0)[ie,il,ib] \
                                 / we / wlon / wlat)
-                               
+
 
 
         # map with primary gamma ray emission
-        eobs_prim_axis = MapAxis.from_edges(self._edges_prim[1],
-                            interp = 'log', name = 'Eobs')
+        eobs_prim_axis = mapaxis.from_edges(self._edges_prim[1],
+                            interp = 'log', name = 'eobs')
 
-        self._prim_map = Map.create(binsz = binsz, width = width,
+        self._prim_map = map.create(binsz = binsz, width = width,
                                 skydir = skycoord,
                                 axes = [eobs_prim_axis])
 
@@ -1356,8 +1208,8 @@ class EMMap(object):
                                [self._prim_map.geom.center_pix[1]],
                                range(self._prim_map.data.shape[0])]
 
-        # make it in units photons / s / cm^2 / eV / sr
-        self.__fprim = self._widths['Eobs_prim'] * \
+        # make it in units photons / s / cm^2 / ev / sr
+        self.__fprim = self._widths['eobs_prim'] * \
                     np.radians(self._widths['lon'][0]) * \
                     np.radians(self._widths['lat'][0])
         self._prim_map.set_by_idx(self._idx_prim_cen,
@@ -1366,60 +1218,60 @@ class EMMap(object):
 
         # 2d array for integration of injected energy
         self._einj = []
-        for i,emin in enumerate(self._edges['Etrue'][:-1]):
-            self._einj.append( np.logspace( np.log10(emin), 
-                        np.log10(self._edges['Etrue'][i+1]), steps))
+        for i,emin in enumerate(self._edges['etrue'][:-1]):
+            self._einj.append( np.logspace( np.log10(emin),
+                        np.log10(self._edges['etrue'][i+1]), steps))
         self._einj = np.array(self._einj)
 
-        self._weights = np.ones_like(self._centers['Etrue'])
+        self._weights = np.ones_like(self._centers['etrue'])
         self._weights_inj = injected[1]
 
         return
 
     @staticmethod
     def gen_from_hd5f(infile, skycoord,
-            dgrp = 'simEM',
+            dgrp = 'simem',
             width = 6.,
             ebins = 41,
             binsz = 0.04, tmax = 1e6):
         """
-        Generate gammapy.Map from hd5f file
-        Bin boundaries are set automatically
+        generate gammapy.map from hd5f file
+        bin boundaries are set automatically
         to hardcoded reasonable values
 
-        Parameters
+        parameters
         ----------
         infile: str
             path to hd5f file created with the stack_results_lso function
 
-        skycoord: `~astropy.coordinates.SkyCoord` object
-            Sky coordinates for observation
-            
+        skycoord: `~astropy.coordinates.skycoord` object
+            sky coordinates for observation
+
 
         kwargs
         ------
         width: float
-            width of ROI, in degrees, used for binning in phi and theta
+            width of roi, in degrees, used for binning in phi and theta
             (default: 3.)
         binsz: float
             with of each pixel in degrees for resulting histogram
             which will be used for phi and theta binning
-            (default: 0.04, motivated from minimum CTA PSF)
+            (default: 0.04, motivated from minimum cta psf)
         ebins: int
-            Total number of bins of observed energy
+            total number of bins of observed energy
         """
-        hfile = h5py.File(infile, 'r+')
+        hfile = h5py.file(infile, 'r+')
         data = hfile[dgrp]
         config = yaml.load(data.attrs['config'])
 
-        edges = OrderedDict({})
+        edges = ordereddict({})
         # injected energy bins
-        edges['Etrue'] = np.logspace(np.log10(config['Source']['Emin']),
-                    np.log10(config['Source']['Emax']),
-                    config['Source']['Esteps'])
+        edges['etrue'] = np.logspace(np.log10(config['source']['emin']),
+                    np.log10(config['source']['emax']),
+                    config['source']['esteps'])
         # observed energy bins
-        edges['Eobs'] = np.logspace(np.log10(data['E'][()].min()),
-                    np.log10(data['E'][()].max()),
+        edges['eobs'] = np.logspace(np.log10(data['e'][()].min()),
+                    np.log10(data['e'][()].max()),
                     ebins)
         # time delay
         tmin = np.max([0.1,data['dt'][()].min()])
@@ -1430,69 +1282,69 @@ class EMMap(object):
         if edges['t_delay'][-1] < data['dt'][()].max():
             edges['t_delay'] = np.concatenate([edges['t_delay'],[data['dt'][()].max()]])
 
-        # phi 
+        # phi
         nbins = int(np.ceil(2.*width/2./binsz))
         edges['lon'] =  np.linspace(-width/2.,width/2.,nbins + 1)
-        # theta 
+        # theta
         edges['lat'] =  np.linspace(90.-width/2.,90. + width/2.,nbins + 1)
 
         values = {}
-        values['Etrue'] = data['E0'][()]
-        values['Eobs'] = data['E'][()]
+        values['etrue'] = data['e0'][()]
+        values['eobs'] = data['e'][()]
         values['t_delay'] = data['dt'][()]
-        values['lon'] = data['Protsph'][1,:]
-        values['lat'] = data['Protsph'][2,:]
-        values['idobs'] = data['ID'][()]
-        values['id1'] = data['ID1'][()]
+        values['lon'] = data['protsph'][1,:]
+        values['lat'] = data['protsph'][2,:]
+        values['idobs'] = data['id'][()]
+        values['id1'] = data['id1'][()]
 
-        injected = np.array([data['intspec/Ecen'][()], data['intspec/weights'][()]])
+        injected = np.array([data['intspec/ecen'][()], data['intspec/weights'][()]])
 
         hfile.close()
-        return EMMap(values, edges, skycoord,
-                    injected = injected, 
-                    idinj  = config['Source']['Composition'],
+        return emmap(values, edges, skycoord,
+                    injected = injected,
+                    idinj  = config['source']['composition'],
                     iddetection= 22, config = config,
                     binsz = binsz, width = width, tmax = tmax)
 
-    def make_central_coordinates(self, energies, name = 'Eobs'):
+    def make_central_coordinates(self, energies, name = 'eobs'):
         """
-        make a coordinate grid for the central 
-        pixel of the spatial dimensions 
+        make a coordinate grid for the central
+        pixel of the spatial dimensions
         with an additional energy axis
 
-        Parameter
+        parameter
         ---------
         energies: `~numpy.ndarray`
             array with energies for the energy coordinate axis
-        
-        Returns
+
+        returns
         -------
-        `~gammapy.MapCoord` object with the coordinates
+        `~gammapy.mapcoord` object with the coordinates
         of central spatial pixel and energies
         """
-        # get the coordinates of the cental spatial pixel 
+        # get the coordinates of the cental spatial pixel
         # and all indeces in energy
         central_lon = self._casc_map.geom.center_coord[0]
         central_lat = self._casc_map.geom.center_coord[1]
 
-        return MapCoord.create({'lon' : central_lon, 
-                                'lat' : central_lat, 
+        return mapcoord.create({'lon' : central_lon,
+                                'lat' : central_lat,
                                 name : energies})
-        
-    def make_full_map_coordinates(self, energies, name = 'Eobs'):
+
+    def make_full_map_coordinates(self, energies, name = 'eobs'):
         """
-        make a coordinate grid for all 
-        pixels of the spatial dimensions 
+        make a coordinate grid for all
+        pixels of the spatial dimensions
         with an additional energy axis
 
-        Parameter
+        parameter
         ---------
         energies: `~numpy.ndarray`
             array with central energies for the energy coordinate axis
-        
-        Returns
+
+        returns
         -------
-        `~gammapy.MapCoord` object with the coordinates
+        `~gammapy.mapcoord` object with the coordinates
         of central spatial pixel and energies
         """
         ll,bb =  self._casc_map.geom.get_coord()[:-1]
@@ -1502,46 +1354,46 @@ class EMMap(object):
         bbb = np.vstack([bb[np.newaxis, ...] for i in range(energies.size) ])
         eee = np.vstack([e * np.ones_like(ll)[np.newaxis,...] for e in energies])
 
-        return MapCoord.create({'lon' : lll, 
-                                'lat' : bbb, 
+        return mapcoord.create({'lon' : lll,
+                                'lat' : bbb,
                                 name : eee})
 
     def set_weights(self, injspec):
         """
         set weights to compute cascade for an arbitrary spectrum
 
-        Parameters
+        parameters
         ----------
         injspec: function pointer
-            function that takes energy in eV and returns flux per energy
-            Must be in units per eV
+            function that takes energy in ev and returns flux per energy
+            must be in units per ev
         """
-    
-        # flux of new injected spectrum integrated in 
+
+        # flux of new injected spectrum integrated in
         # bins of injected spectrum
-        Finj = simps(injspec(self._einj) * self._einj, np.log(self._einj), axis = 1)
+        finj = simps(injspec(self._einj) * self._einj, np.log(self._einj), axis = 1)
         # update weights
-        self._weights = Finj / self._weights_inj
-        return 
+        self._weights = finj / self._weights_inj
+        return
 
     def apply_weights(self, injspec):
         """
-        Apply the weights to the maps
+        apply the weights to the maps
 
-        Parameters
+        parameters
         ----------
         injspec: function pointer
-            function that takes energy in eV and returns flux per energy
-            Must be in units per eV
+            function that takes energy in ev and returns flux per energy
+            must be in units per ev
         """
         self.set_weights(injspec)
-        cut = (self._hist_casc.T * self._weights).T
+        cut = (self._hist_casc.t * self._weights).t
         il, ib, ie = self._casc_map.geom.get_idx()
         self._casc_map.set_by_idx(self._casc_map.geom.get_idx(),
                                 cut.sum(axis = 0)[ie, il, ib] / \
                                 self._vol_map.get_by_idx((il,ib,ie)))
 
         self._prim_map.set_by_idx(self._idx_prim_cen,
-                (self._hist_prim.T * self._weights).T.sum(axis = 0)[np.newaxis, np.newaxis, :] \
+                (self._hist_prim.t * self._weights).t.sum(axis = 0)[np.newaxis, np.newaxis, :] \
                 / self.__fprim)
         return

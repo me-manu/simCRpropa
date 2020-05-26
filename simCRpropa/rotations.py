@@ -1,5 +1,6 @@
 import numpy as np
 
+
 def car2sph(vec, axis = 0):
     """transform a cartesian vector into spherical coordinates"""
     result = np.zeros(vec.shape)
@@ -9,15 +10,20 @@ def car2sph(vec, axis = 0):
     result[2,:] = np.arccos(vec[2,:] / result[0,:]) # theta component
     return result
 
+
 def project2observer(vec, unitvec2obs, axis = 0):
-    """transforms vector to observers coordinate system
+    """transforms vector to observer's coordinate system
 
     Parameter
     ---------
     vec: `~numpy.ndarray`
-        Vector to be transformed
+        Vector to be transformed, usually, this should be the momemtum vector
+        at the time of detection or momentum vector at origin.
+
     unitvec2obs: `~numpy.ndarray`
-        Unit vector to observer
+        Unit vector between point where event hit the sphere (observer's position)
+        and the point where event originated (the source).
+        In CRPropa notation, this would be (X - X0) / || X - X0 ||
 
     {options}
 
@@ -27,20 +33,21 @@ def project2observer(vec, unitvec2obs, axis = 0):
 
     Returns
     -------
-    `~numpy.ndarray` with projected vec
+    `~numpy.ndarray` with vec projected onto new coordinate system
+    of observer, where z-axis points along (X - X0)
     """
     r = np.linalg.norm(unitvec2obs, axis = axis)
 
     if axis == 0:
         rho = np.sqrt(unitvec2obs[0,:]*unitvec2obs[0,:] + \
-                unitvec2obs[1,:]*unitvec2obs[1,:])
+                      unitvec2obs[1,:]*unitvec2obs[1,:])
         cosphi = unitvec2obs[0,:] / rho
         sinphi = unitvec2obs[1,:] / rho
         costheta = unitvec2obs[2,:] / r
 
     elif axis == 1:
         rho = np.sqrt(unitvec2obs[:,0]*unitvec2obs[:,0] + \
-                unitvec2obs[:,1]*unitvec2obs[:,1])
+                      unitvec2obs[:,1]*unitvec2obs[:,1])
         cosphi = unitvec2obs[:,0] / rho
         sinphi = unitvec2obs[:,1] / rho
         costheta = unitvec2obs[:,2] / r
@@ -52,15 +59,15 @@ def project2observer(vec, unitvec2obs, axis = 0):
     e3 = -unitvec2obs
 
     result = np.vstack([np.sum(vec * e1, axis = 0),
-                  np.sum(vec * e2, axis = 0),
-                  np.sum(vec * e3, axis = 0)])
+                        np.sum(vec * e2, axis = 0),
+                        np.sum(vec * e3, axis = 0)])
     return result
 
 def projectjetaxis(vec, jet_opening_angle = 5.,
                     jet_theta_angle = 5.,
                     jet_phi_angle = 90.):
     """
-    Project inital momentum vectors on jet axis
+    Project initial momentum vectors on jet axis
     and select only momentum vectors that fall within cone
 
     Parameters
@@ -68,7 +75,7 @@ def projectjetaxis(vec, jet_opening_angle = 5.,
     vec: `~numpy.ndarray`
         Vector of initial momenta
     jet_opening_angle: float
-        jet opening angle in degrees
+        full jet opening angle (aperture) in degrees
     jet_theta_angle: float
         theta angle of jet axis, in degrees, 
         this is the angle to the l.o.s. to the observer
@@ -81,20 +88,20 @@ def projectjetaxis(vec, jet_opening_angle = 5.,
     """
     phi = np.radians(jet_phi_angle)
     theta = np.radians(jet_theta_angle)
+
     # jet vector in observers frame
     vecjet = np.vstack([np.ones(vec.shape[1]) * np.cos(phi) *np.sin(theta),
-        np.ones(vec.shape[1]) * np.sin(phi) *np.sin(theta),
-        np.ones(vec.shape[1]) * np.cos(theta)])
+                        np.ones(vec.shape[1]) * np.sin(phi) *np.sin(theta),
+                        np.ones(vec.shape[1]) * np.cos(theta)])
 
     # angle between jet axis and initial momentum
     cosangle = np.sum(vecjet * -vec, axis = 0)
 
     # restrict to those photons inside cone
-    #return cosangle >= np.cos(np.radians(jet_opening_angle))
-# should be max half jet opening angle
-# TODO check this again
+    # cos(alpha) >= cos(theta_jet / 2.) is equal to alpha <= theta_jet / 2.
     return cosangle >= np.cos(np.radians(jet_opening_angle/2.))
 
+# DEPRECATED FUNCTIONS:
 
 
 def setRz(phi):
