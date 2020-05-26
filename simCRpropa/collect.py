@@ -50,7 +50,7 @@ def combine_output(outfile, overwrite = False):
     for i,fi in enumerate(ff):
         logging.info("Working on {0:s} ...".format(fi))
         f = h5py.File(fi, "r+")
-        conf = yaml.load(f['simEM'].attrs['config'])
+        conf = yaml.safe_load(f['simEM'].attrs['config'])
         try:
             f['simEM'].keys()
         except (RuntimeError, ValueError):

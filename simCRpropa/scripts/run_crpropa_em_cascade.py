@@ -1,19 +1,18 @@
-import numpy as np
-from time import time
-from os import path
 import os
-from crpropa import *
+import logging
+import numpy as np
 import yaml
 import argparse
-from haloanalysis.batchfarm import utils,lsf
-import logging
+import resource
+from time import time
+from os import path
 from glob import glob
 from copy import copy, deepcopy
 from simCRpropa.sim_crpropa import SimCRPropa
 from simCRpropa.collect import readCRPropaOutput,convertOutput2Hdf5
 from simCRpropa import collect as col
-import numpy as np
-import resource
+from fermiAnalysis.batchfarm import utils,lsf
+from crpropa import *
 from psutil import virtual_memory
 
 def limit_memory(maxsize):
@@ -41,7 +40,9 @@ if __name__ == '__main__':
     if args.l > 0:
         limit_memory(args.l)
 
-    config = yaml.load(open(args.conf))
+    with open(args.conf) as f:
+        config = yaml.safe_load(f)
+
     tmpdir, job_id = lsf.init_lsf()
     if not job_id:
         job_id = args.i
@@ -55,7 +56,7 @@ if __name__ == '__main__':
     os.environ['OMP_NUM_THREADS'] = str(sim.Simulation['cpu_n'])
 
     sim.setOutput(job_id)
-    sim.outputfile = path.join(tmpdir, path.basename(sim.outputfile))
+    sim.outputfile = str(path.join(tmpdir, path.basename(sim.outputfile)))
     logging.info("writing output file to : {0:s}".format(sim.outputfile))
     logging.info("and will copy it to : {0:s}".format(sim.FileIO['outdir']))
     sim.setup()
@@ -73,6 +74,10 @@ if __name__ == '__main__':
 #            weights *= (1. + 0.1 * (sim.config['Observer']['obsAngle'] + 1.))
 #    logging.info('weights: {0}'.format(weights))
 
+    # add distances to config
+    config['Source']['LightTravelDistance'] = redshift2LightTravelDistance(config['Source']['z'])
+    config['Source']['LuminosityDistance'] = redshift2LuminosityDistance(config['Source']['z'])
+    config['Source']['ComovingDistance'] = redshift2ComovingDistance(config['Source']['z'])
 
     for i in range(sim.nbins):
 
@@ -99,7 +104,7 @@ if __name__ == '__main__':
 
     utils.sleep(1.)
 
-    outputfile = deepcopy(sim.outputfile)
+    outputfile = str(deepcopy(sim.outputfile))
     outdir = deepcopy(sim.FileIO['outdir'])
     useSpectrum = deepcopy(sim.Source['useSpectrum'])
     weights = deepcopy(sim.weights)
@@ -107,6 +112,7 @@ if __name__ == '__main__':
     # read the output
     names, units, data = readCRPropaOutput(outputfile)
     hfile = outputfile.split(".dat")[0] + ".hdf5"
+
     col.convertOutput2Hdf5(names, units, data, weights, hfile, config,
               pvec_id = ['','0'],
               xvec_id = ['','0'],
