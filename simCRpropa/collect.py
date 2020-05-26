@@ -1027,9 +1027,9 @@ class emmap(object):
     at earth with a delay < tmax.
     """
     def __init__(self, values, edges, skycoord,
-                    injected = none,
+                    injected = None,
                     idinj  = 22,
-                    iddetection= 22, config = none,
+                    iddetection= 22, config = None,
                     tmax = 1e6,
                     steps = 10,
                     binsz = 0.04, width = 6.):
@@ -1093,7 +1093,7 @@ class emmap(object):
         # injected spectrum condition
         self._mi = (values['idobs']== iddetection) & (values['id1'] == idinj)
 
-        if not config == none:
+        if not config == None:
             for k,v in config.items():
                 setattr(self,k,v)
 
