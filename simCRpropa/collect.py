@@ -137,7 +137,8 @@ def combine_output(outfile, overwrite = False):
                     combined[k][:,where_to_start_appending[k]:where_to_start_appending[k] + f[k].shape[1]] = f[k]
                     where_to_start_appending[k] += f[k].shape[1]
 
-        if not ifile:
+        # copy config from last used file to combined file
+        if i == len(ff) - 1:
             combined['simEM'].attrs['config'] = f['simEM'].attrs['config']
         f.close()
         ifile += 1

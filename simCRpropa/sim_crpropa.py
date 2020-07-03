@@ -306,6 +306,9 @@ class SimCRPropa(object):
         elif self.Source.get('source_morphology', 'cone') == 'iso':
             self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['basedir'],
                                                 'iso/'))
+        elif self.Source.get('source_morphology', 'cone') == 'dir':
+            self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['basedir'],
+                                                'dir/'))
         else:
             raise ValueError("Chosen source morphology not supported.")
         self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['outdir'],
@@ -408,7 +411,7 @@ class SimCRPropa(object):
 
         logging.info('Saving output to {0:s}'.format(self.outputfile))
         self.output = TextOutput(self.outputfile,
-                                    Output.Event3D)
+                                 Output.Event3D)
 
         self.output.enable(Output.CurrentIdColumn)
         self.output.enable(Output.CurrentDirectionColumn)
@@ -419,6 +422,7 @@ class SimCRPropa(object):
         self.output.enable(Output.TrajectoryLengthColumn)
         self.output.enable(Output.SourceDirectionColumn)
         self.output.enable(Output.SourcePositionColumn)
+        self.output.enable(Output.WeightColumn)
 
         self.output.disable(Output.RedshiftColumn)
         self.output.disable(Output.CreatedDirectionColumn)
@@ -444,9 +448,14 @@ class SimCRPropa(object):
             # emission to negativ x-axis
             if self.Source.get('source_morphology', 'cone') == 'cone':
                 self.source.add(SourceEmissionCone(
-                Vector3d(np.cos(np.pi - np.radians(self.Observer['obsAngle'])), 
-                    np.sin(np.pi - np.radians(self.Observer['obsAngle'])), 0), 
-                    np.radians(self.Source['th_jet'])))
+                                    Vector3d(np.cos(np.pi - np.radians(self.Observer['obsAngle'])), 
+                                        np.sin(np.pi - np.radians(self.Observer['obsAngle'])), 0), 
+                                    np.radians(self.Source['th_jet'])))
+            elif self.Source.get('source_morphology', 'cone') == 'dir':
+                self.source.add(SourceDirection(
+                                    Vector3d(np.cos(np.pi - np.radians(self.Observer['obsAngle'])), 
+                                        np.sin(np.pi - np.radians(self.Observer['obsAngle'])), 0)
+                                    ))
             elif self.Source.get('source_morphology', 'cone') == 'iso':
                 self.source.add(SourceIsotropicEmission())
             else:
@@ -463,6 +472,11 @@ class SimCRPropa(object):
                              np.radians(self.Source['th_jet'])))
             elif self.Source.get('source_morphology', 'cone') == 'iso':
                 self.source.add(SourceIsotropicEmission())
+            elif self.Source.get('source_morphology', 'cone') == 'dir':
+                self.source.add(SourceDirection(
+                                    Vector3d(np.cos(np.pi - np.radians(self.Observer['obsAngle'])), 
+                                        np.sin(np.pi - np.radians(self.Observer['obsAngle'])), 0)
+                                    ))
             else:
                 raise ValueError("Chosen source morphology not supported.")
         # SourceParticleType takes int for particle ID. 
@@ -496,8 +510,8 @@ class SimCRPropa(object):
         #PropagationCK (ref_ptr< MagneticField > field=NULL, double tolerance=1e-4, double minStep=(0.1 *kpc), double maxStep=(1 *Gpc))
         #self.m.add(PropagationCK(self.bField, 1e-2, 100 * kpc, 10 * Mpc))
         self.m.add(PropagationCK(self.bField, self.Simulation['tol'],
-                            self.Simulation['minStepLength'] * pc,
-                            self.Simulation['maxStepLength'] * Mpc))
+                                 self.Simulation['minStepLength'] * pc,
+                                 self.Simulation['maxStepLength'] * Mpc))
 
         thinning = self.Simulation.get('thinning', 0.)
         # Updates redshift and applies adiabatic energy loss according to the traveled distance. 
@@ -520,8 +534,16 @@ class SimCRPropa(object):
         #if havePhotons = True, photons are created
         # also availableL EMDoublePairProduction, EMTripletPairProduction
         self.m.add(EMPairProduction(self._EBL, True, thinning))
+        if self.Simulation.get('include_higher_order_pp', False):
+            self.m.add(EMDoublePairProduction(self._EBL, True, thinning))
+            self.m.add(EMTripletPairProduction(self._EBL, True, thinning))
+
         if self.Simulation.get('include_CMB', True):
             self.m.add(EMPairProduction(CMB, True))
+            if self.Simulation.get('include_higher_order_pp', False):
+                self.m.add(EMDoublePairProduction(CMB, True, thinning))
+                self.m.add(EMTripletPairProduction(CMB, True, thinning))
+
         # for photo-pion production: 
         #PhotoPionProduction (PhotonField photonField=CMB, bool photons=false, bool neutrinos=false, 
         # bool antiNucleons=false, double limit=0.1, bool haveRedshiftDependence=false)
@@ -649,13 +671,14 @@ class SimCRPropa(object):
         # stop tracing particle once it's propagation is longer than Dmax
         # or 1.5 * comoving distance of distance > 100. Mpc. 
         # this would anyway correspond to a very long time delay of > 50. Mpc / c
-        if self.D / Mpc > 100.:
-            dmax = np.min([self.BreakConditions['Dmax'] * 1000.,self.D * 1.5 / Mpc])
-        else: 
-            dmax = self.BreakConditions['Dmax'] * 1000.
+        #if self.D / Mpc > 100.:
+            #dmax = np.min([self.BreakConditions['Dmax'] * 1000.,self.D * 1.5 / Mpc])
+        #else: 
+        dmax = self.BreakConditions['Dmax'] * 1000.
         self.m.add(MaximumTrajectoryLength(dmax * Mpc)) # Dmax is COMOVING
         # deactivate particle below a certain redshift
-        self.m.add(MinimumRedshift(-1. * self.Observer['zmin']))
+        if self.Observer['zmin'] is not None:
+            self.m.add(MinimumRedshift(-1. * self.Observer['zmin']))
 
         # periodic boundaries
         #self.extent is the size of the B field grid        
@@ -713,6 +736,8 @@ class SimCRPropa(object):
                         kwargs['logdir'] = path.join(self.FileIO['outdir'],'log/')
                         kwargs['tmpdir'] = path.join(self.FileIO['outdir'],'tmp/')
                         kwargs['jname'] = 'b{0:.2f}l{1:.2f}'.format(np.log10(b),np.log10(l))
+                        kwargs['log'] = path.join(kwargs['logdir'], kwargs['jname'] + ".out")
+                        kwargs['err'] = path.join(kwargs['logdir'], kwargs['jname'] + ".err")
                         lsf.submit_lsf(script,
                             self.config,'',njobs, 
                             **kwargs)

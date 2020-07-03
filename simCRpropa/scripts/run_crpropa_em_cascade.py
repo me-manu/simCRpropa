@@ -80,11 +80,16 @@ if __name__ == '__main__':
     config['Source']['ComovingDistance'] = redshift2ComovingDistance(config['Source']['z'])
 
     for i in range(sim.nbins):
+        if not i:
+            logging.info(sim.source)
+            logging.info(sim.m)
+            logging.info(sim.observer)
 
         if not sim.Source['useSpectrum']:
             sim.Source['Energy'] = sim.EeV[i]
             logging.info("======= Bin {0:n} / {1:n}, Energy : {2:3e} eV ========".format(
                 i + 1, sim.nbins, sim.EeV[i]))
+        t0 = time()
 
         sim._create_source()
         # run simulation
@@ -92,15 +97,11 @@ if __name__ == '__main__':
             sim.m.setShowProgress(True)
         else:
             sim.m.setShowProgress(False)
-        if not i:
-            sim.m.showModules()
-            logging.info(sim.source)
-            logging.info(sim.m)
-            logging.info(sim.observer)
         logging.info("Running simulation for {1:n} particles, saving output to {0:s}".format(sim.outputfile,
                 sim.weights[i]))
         sim.m.run(sim.source,  sim.weights[i], True)
         sim.output.close()
+        logging.info("Simulating bin {0:n} / {1:n} took {2:.1f} s".format(i + 1, sim.nbins, time() - t0))
 
     utils.sleep(1.)
 
