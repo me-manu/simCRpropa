@@ -593,7 +593,7 @@ class CascMap(object):
         tmin, tmin_data, tmax_data = [], [], []
 
         for i, filename in enumerate(infile):
-            logging.info(f"Reading file {filename:s}")
+            logging.info("Reading file {0:s}".format(filename))
             hfile = h5py.File(filename, 'r+')
             data = hfile[dgrp]
             config = yaml.safe_load(data.attrs['config'])
@@ -603,7 +603,8 @@ class CascMap(object):
             tmin.append(min_resol.value)
             tmax_data.append(data['dt'][()].max())
             tmin_data.append(data['dt'][()].min())
-            logging.info(f"time resolution of the simulation was {min_resol:.3f} = {min_resol.to('day'):.3f} ")
+            logging.info("time resolution of the simulation was"
+                         "{0:.3f} = {1:.3f}".format(min_resol, min_resol.to('day')))
             if tmin_data[-1] < -1. * tmin[-1]:
                 logging.error("Minimum time delay is smaller then -1 * time resolution, check assumed source distance")
 
