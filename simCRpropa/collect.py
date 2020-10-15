@@ -50,7 +50,7 @@ def combine_output(outfile, overwrite = False):
     for i,fi in enumerate(ff):
         logging.info("Working on {0:s} ...".format(fi))
         f = h5py.File(fi, "r+")
-        conf = yaml.load(f['simEM'].attrs['config'])
+        conf = yaml.safe_load(f['simEM'].attrs['config'])
         try:
             f['simEM'].keys()
         except (RuntimeError, ValueError):
@@ -137,7 +137,8 @@ def combine_output(outfile, overwrite = False):
                     combined[k][:,where_to_start_appending[k]:where_to_start_appending[k] + f[k].shape[1]] = f[k]
                     where_to_start_appending[k] += f[k].shape[1]
 
-        if not ifile:
+        # copy config from last used file to combined file
+        if i == len(ff) - 1:
             combined['simEM'].attrs['config'] = f['simEM'].attrs['config']
         f.close()
         ifile += 1
@@ -1027,9 +1028,9 @@ class emmap(object):
     at earth with a delay < tmax.
     """
     def __init__(self, values, edges, skycoord,
-                    injected = none,
+                    injected = None,
                     idinj  = 22,
-                    iddetection= 22, config = none,
+                    iddetection= 22, config = None,
                     tmax = 1e6,
                     steps = 10,
                     binsz = 0.04, width = 6.):
@@ -1093,7 +1094,7 @@ class emmap(object):
         # injected spectrum condition
         self._mi = (values['idobs']== iddetection) & (values['id1'] == idinj)
 
-        if not config == none:
+        if not config == None:
             for k,v in config.items():
                 setattr(self,k,v)
 

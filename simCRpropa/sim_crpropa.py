@@ -182,7 +182,7 @@ class SimCRPropa(object):
         """
         Initialize the class
         """
-        df = yaml.load(defaults)
+        df = yaml.safe_load(defaults)
         for k,v in df.items():
             kwargs.setdefault(k,v)
             for kk,vv in v.items():
@@ -245,6 +245,8 @@ class SimCRPropa(object):
                     np.log10(self.Source['Emax']), self.Source['Esteps'])
                 self.weights = self.Simulation['Nbatch'] * \
                             np.ones(self.EeVbins.size - 1, dtype = np.int) # weight with optical depth?
+                self.EeV = np.sqrt(self.EeVbins[1:] * self.EeVbins[:-1])
+
             elif type(self.Source['Emin']) == list or type(self.Source['Emin']) == tuple \
                 or type(self.Source['Emin']) == np.ndarray:
 
@@ -256,8 +258,9 @@ class SimCRPropa(object):
                     len(self.Simulation["Nbatch"]):
                     raise TypeError("Emin, Emax, Nbatch arrays must be of same size")
 
-                self.EeVbins = np.append(self.Source["Emin"], self.Source["Emax"][-1])
+                self.EeVbins = np.vstack([self.Source["Emin"], self.Source["Emax"]])
                 self.weights = np.array(self.Simulation["Nbatch"])
+                self.EeV = np.sqrt(np.prod(self.EeVbins, axis=0))
 
             # increase number of weights for small scale observer
             if self.Observer['obsSmallSphere']:
@@ -271,7 +274,6 @@ class SimCRPropa(object):
                     self.weights *= (1. + 0.1 * (self.Observer['obsAngle'] + 1.))
 
             self.weights = self.weights.astype(np.int)
-            self.EeV = np.sqrt(self.EeVbins[1:] * self.EeVbins[:-1])
             self.nbins = self.EeV.size
             self.Source['Energy'] = self.EeV[0]
             logging.info("There will be {0:n} energy bins".format(self.nbins))
@@ -297,7 +299,18 @@ class SimCRPropa(object):
 
         # append options to file path
         self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['basedir'],
-                        'z{0[z]:.3f}/th_jet{0[th_jet]}/'.format(self.Source)))
+                                'z{0[z]:.3f}'.format(self.Source)))
+        if self.Source.get('source_morphology', 'cone') == 'cone':
+            self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['basedir'],
+                            'th_jet{0[th_jet]}/'.format(self.Source)))
+        elif self.Source.get('source_morphology', 'cone') == 'iso':
+            self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['basedir'],
+                                                'iso/'))
+        elif self.Source.get('source_morphology', 'cone') == 'dir':
+            self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['basedir'],
+                                                'dir/'))
+        else:
+            raise ValueError("Chosen source morphology not supported.")
         self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['outdir'],
                         'th_obs{0[obsAngle]}/'.format(self.Observer)))
         self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['outdir'],
@@ -315,7 +328,7 @@ class SimCRPropa(object):
         else:
             raise ValueError("Bfield type must be either 'cell' or 'turbulence' not {0[type]}".format(self.Bfield))
 
-        self.outputfile = path.join(self.FileIO['outdir'],self.OutName)
+        self.outputfile = str(path.join(self.FileIO['outdir'],self.OutName))
         logging.info("outdir: {0[outdir]:s}".format(self.FileIO))
         logging.info("outfile: {0:s}".format(self.outputfile))
         return
@@ -352,9 +365,12 @@ class SimCRPropa(object):
             else:
                 gridSize = self.Bfield['NBgrid']
 
-            vgrid = VectorGrid(boxOrigin,
-                                gridSize,
-                                gridSpacing)
+            # init 
+            # floating point 3D vector grid 
+            vgrid = Grid3f(boxOrigin,
+                           gridSize,
+                           gridSpacing)
+
             initRandomField(vgrid, self.Bfield['B'] * gauss, seed = self.Bfield['seed'])
             self.bField = MagneticFieldGrid(vgrid)
             self.__extent = int(np.ceil(redshift2ComovingDistance(self.Source['z'])/\
@@ -381,7 +397,8 @@ class SimCRPropa(object):
             # also possible: detect particles upon exiting a shpere: 
             # ObserverLargeSphere (Vector3d center=Vector3d(0.), double radius=0)
             # radius is of large sphere is equal to source distance
-            self.observer.add(ObserverLargeSphere(obsPosition, self.D))
+            #self.observer.add(ObserverLargeSphere(obsPosition, self.D))
+            self.observer.add(ObserverSurface(Sphere(obsPosition, self.D)))
         # looses a lot of particles -- need periodic boxes
         #Detects particles in a given redshift window. 
         #self.observer.add(ObserverRedshiftWindow(-1. * self.Observer['zmin'], self.Observer['zmin']))
@@ -392,8 +409,9 @@ class SimCRPropa(object):
         #ObserverNucleusVeto
         #ObserverTimeEvolution
 
+        logging.info('Saving output to {0:s}'.format(self.outputfile))
         self.output = TextOutput(self.outputfile,
-                                    Output.Event3D)
+                                 Output.Event3D)
 
         self.output.enable(Output.CurrentIdColumn)
         self.output.enable(Output.CurrentDirectionColumn)
@@ -404,6 +422,7 @@ class SimCRPropa(object):
         self.output.enable(Output.TrajectoryLengthColumn)
         self.output.enable(Output.SourceDirectionColumn)
         self.output.enable(Output.SourcePositionColumn)
+        self.output.enable(Output.WeightColumn)
 
         self.output.disable(Output.RedshiftColumn)
         self.output.disable(Output.CreatedDirectionColumn)
@@ -414,7 +433,6 @@ class SimCRPropa(object):
         #self.output.disable(Output.SourcePositionColumn)
 
 
-        logging.info('Saving output to {0:s}'.format(self.outputfile))
         self.output.setEnergyScale(eV)
         self.observer.onDetection(self.output)
 
@@ -428,19 +446,39 @@ class SimCRPropa(object):
         if self.Observer['obsSmallSphere']:
             self.source.add(SourcePosition(Vector3d(self.D, 0, 0)))
             # emission to negativ x-axis
-            self.source.add(SourceEmissionCone(
-            Vector3d(np.cos(np.pi - np.radians(self.Observer['obsAngle'])), 
-                np.sin(np.pi - np.radians(self.Observer['obsAngle'])), 0), 
-                np.radians(self.Source['th_jet'])))
+            if self.Source.get('source_morphology', 'cone') == 'cone':
+                self.source.add(SourceEmissionCone(
+                                    Vector3d(np.cos(np.pi - np.radians(self.Observer['obsAngle'])), 
+                                        np.sin(np.pi - np.radians(self.Observer['obsAngle'])), 0), 
+                                    np.radians(self.Source['th_jet'])))
+            elif self.Source.get('source_morphology', 'cone') == 'dir':
+                self.source.add(SourceDirection(
+                                    Vector3d(np.cos(np.pi - np.radians(self.Observer['obsAngle'])), 
+                                        np.sin(np.pi - np.radians(self.Observer['obsAngle'])), 0)
+                                    ))
+            elif self.Source.get('source_morphology', 'cone') == 'iso':
+                self.source.add(SourceIsotropicEmission())
+            else:
+                raise ValueError("Chosen source morphology not supported.")
         else:
             obsPosition = Vector3d(self.Observer['obsPosX'],self.Observer['obsPosY'],self.Observer['obsPosZ'])
             # obs position same as source position for LargeSphere Observer
             self.source.add(SourcePosition(obsPosition))
             # emission cone towards positiv x-axis
-            self.source.add(SourceEmissionCone(
-                Vector3d(np.cos(np.radians(self.Observer['obsAngle'])), 
-                         np.sin(np.radians(self.Observer['obsAngle'])), 0), 
-                         np.radians(self.Source['th_jet'])))
+            if self.Source.get('source_morphology', 'cone') == 'cone':
+                self.source.add(SourceEmissionCone(
+                    Vector3d(np.cos(np.radians(self.Observer['obsAngle'])), 
+                             np.sin(np.radians(self.Observer['obsAngle'])), 0), 
+                             np.radians(self.Source['th_jet'])))
+            elif self.Source.get('source_morphology', 'cone') == 'iso':
+                self.source.add(SourceIsotropicEmission())
+            elif self.Source.get('source_morphology', 'cone') == 'dir':
+                self.source.add(SourceDirection(
+                                    Vector3d(np.cos(np.pi - np.radians(self.Observer['obsAngle'])), 
+                                        np.sin(np.pi - np.radians(self.Observer['obsAngle'])), 0)
+                                    ))
+            else:
+                raise ValueError("Chosen source morphology not supported.")
         # SourceParticleType takes int for particle ID. 
         # for a nucleus with A,Z you can use nucleusId(int a, int z) function
         # other IDs are given in http://pdg.lbl.gov/2016/reviews/rpp2016-rev-monte-carlo-numbering.pdf
@@ -472,15 +510,22 @@ class SimCRPropa(object):
         #PropagationCK (ref_ptr< MagneticField > field=NULL, double tolerance=1e-4, double minStep=(0.1 *kpc), double maxStep=(1 *Gpc))
         #self.m.add(PropagationCK(self.bField, 1e-2, 100 * kpc, 10 * Mpc))
         self.m.add(PropagationCK(self.bField, self.Simulation['tol'],
-                            self.Simulation['minStepLength'] * pc,
-                            self.Simulation['maxStepLength'] * Mpc))
+                                 self.Simulation['minStepLength'] * pc,
+                                 self.Simulation['maxStepLength'] * Mpc))
+
+        thinning = self.Simulation.get('thinning', 0.)
         # Updates redshift and applies adiabatic energy loss according to the traveled distance. 
         #m.add(Redshift())
         # Updates redshift and applies adiabatic energy loss according to the traveled distance. 
         # Extends to negative redshift values to allow for symmetric time windows around z=0
-        self.m.add(FutureRedshift())
-        self.m.add(EMInverseComptonScattering(CMB, True))
-        self.m.add(EMInverseComptonScattering(self._EBL, True))
+        if self.Simulation.get('include_z_evol', True):
+            self.m.add(FutureRedshift())
+
+        self.m.add(EMInverseComptonScattering(CMB, True, thinning))
+        if self.Simulation.get('include_CMB', True):
+            # this is a bit counter intuitive here, but I just want to 
+            # make a comparison to all the other codes by excluding the EBL here
+            self.m.add(EMInverseComptonScattering(self._EBL, True, thinning))
         # EMPairProduction:  electron-pair production of cosmic ray photons 
         #with background photons: gamma + gamma_b -> e+ + e- (Breit-Wheeler process).
         # EMPairProduction(PhotonField photonField = CMB, bool haveElectrons = false,double limit = 0.1 ), 
@@ -488,8 +533,17 @@ class SimCRPropa(object):
         # EMInverComptonScattering(PhotonField photonField = CMB,bool havePhotons = false,double limit = 0.1 ), 
         #if havePhotons = True, photons are created
         # also availableL EMDoublePairProduction, EMTripletPairProduction
-        self.m.add(EMPairProduction(self._EBL, True))
-        self.m.add(EMPairProduction(CMB, True))
+        self.m.add(EMPairProduction(self._EBL, True, thinning))
+        if self.Simulation.get('include_higher_order_pp', False):
+            self.m.add(EMDoublePairProduction(self._EBL, True, thinning))
+            self.m.add(EMTripletPairProduction(self._EBL, True, thinning))
+
+        if self.Simulation.get('include_CMB', True):
+            self.m.add(EMPairProduction(CMB, True))
+            if self.Simulation.get('include_higher_order_pp', False):
+                self.m.add(EMDoublePairProduction(CMB, True, thinning))
+                self.m.add(EMTripletPairProduction(CMB, True, thinning))
+
         # for photo-pion production: 
         #PhotoPionProduction (PhotonField photonField=CMB, bool photons=false, bool neutrinos=false, 
         # bool antiNucleons=false, double limit=0.1, bool haveRedshiftDependence=false)
@@ -501,7 +555,8 @@ class SimCRPropa(object):
         #SynchrotronRadiation (ref_ptr< MagneticField > field, bool havePhotons=false, double limit=0.1) or 
         #SynchrotronRadiation (double Brms=0, bool havePhotons=false, double limit=0.1) ; 
         #Large number of particles can cause memory problems!
-        self.m.add(SynchrotronRadiation(self.bField, True))
+        if self.Simulation.get('include_sync', True):
+            self.m.add(SynchrotronRadiation(self.bField, True, thinning))
         logging.info('modules initialized')
         return
 
@@ -614,13 +669,16 @@ class SimCRPropa(object):
         self.m.add(MinimumEnergy(self.BreakConditions['Emin'] * eV))
         self.m.add(self.observer)
         # stop tracing particle once it's propagation is longer than Dmax
-        if self.D / Mpc > 100.:
-            dmax = np.min([self.BreakConditions['Dmax'] * 1000.,self.D * 1.5 / Mpc])
-        else: 
-            dmax = self.BreakConditions['Dmax'] * 1000.
+        # or 1.5 * comoving distance of distance > 100. Mpc. 
+        # this would anyway correspond to a very long time delay of > 50. Mpc / c
+        #if self.D / Mpc > 100.:
+            #dmax = np.min([self.BreakConditions['Dmax'] * 1000.,self.D * 1.5 / Mpc])
+        #else: 
+        dmax = self.BreakConditions['Dmax'] * 1000.
         self.m.add(MaximumTrajectoryLength(dmax * Mpc)) # Dmax is COMOVING
         # deactivate particle below a certain redshift
-        self.m.add(MinimumRedshift(-1. * self.Observer['zmin']))
+        if self.Observer['zmin'] is not None:
+            self.m.add(MinimumRedshift(-1. * self.Observer['zmin']))
 
         # periodic boundaries
         #self.extent is the size of the B field grid        
@@ -643,7 +701,7 @@ class SimCRPropa(object):
         return 
 
     @lsf.setLsf
-    def run(self,  overwrite = False, force_combine = False,
+    def run(self,  overwrite=False, force_combine=False, overwrite_combine=False,
         **kwargs):
         """Submit simulation jobs"""
 
@@ -678,6 +736,8 @@ class SimCRPropa(object):
                         kwargs['logdir'] = path.join(self.FileIO['outdir'],'log/')
                         kwargs['tmpdir'] = path.join(self.FileIO['outdir'],'tmp/')
                         kwargs['jname'] = 'b{0:.2f}l{1:.2f}'.format(np.log10(b),np.log10(l))
+                        kwargs['log'] = path.join(kwargs['logdir'], kwargs['jname'] + ".out")
+                        kwargs['err'] = path.join(kwargs['logdir'], kwargs['jname'] + ".err")
                         lsf.submit_lsf(script,
                             self.config,'',njobs, 
                             **kwargs)
@@ -694,7 +754,7 @@ class SimCRPropa(object):
                             for f in ffdat:
                                 utils.rm(f)
 
-                        collect.combine_output(outfile, overwrite = overwrite)
+                        collect.combine_output(outfile, overwrite=overwrite_combine)
         return
 
 @lsf.setLsf
@@ -710,6 +770,7 @@ def main(**kwargs):
     parser.add_argument('--concurrent', default = 0,help='number of max simultaneous jobs', type=int)
     parser.add_argument('--sleep', default = 10,help='seconds to sleep between job submissions', type=int)
     parser.add_argument('--overwrite', default = 0,help='overwrite existing combined files', type=int)
+    parser.add_argument('--overwrite_combine', default = 0,help='overwrite existing combined files', type=int)
     parser.add_argument('--force_combine', default = 0,help='force the combination of files', type=int)
     args = parser.parse_args()
     kwargs['dry'] = args.dry
@@ -720,10 +781,15 @@ def main(**kwargs):
     kwargs['span'] = args.span
     
     utils.init_logging('DEBUG', color = True)
-    config = yaml.load(open(args.conf))
+
+    with open(args.conf) as f:
+        config = yaml.safe_load(f)
+
     sim = SimCRPropa(**config)
-    sim.run(overwrite = bool(args.overwrite),
-        force_combine = bool(args.force_combine), **kwargs)
+    sim.run(overwrite=bool(args.overwrite),
+        force_combine=bool(args.force_combine),
+        overwrite_combine=bool(args.overwrite_combine),
+        **kwargs)
     return sim
 
 if __name__ == '__main__':
