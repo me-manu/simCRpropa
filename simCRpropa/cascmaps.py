@@ -15,7 +15,9 @@ from scipy.interpolate import UnivariateSpline, interp1d
 from gammapy.modeling.models.cube import SkyModelBase
 from gammapy.modeling.parameter import _get_parameters_str
 from gammapy.modeling import Parameter, Parameters
-from gammapy.utils.scripts import make_name
+from astropy.coordinates import Angle
+from gammapy.maps import WcsNDMap, scale_cube
+from astropy.convolution import Tophat2DKernel
 
 
 def stack_results_lso(infile, outfile, **kwargs):
@@ -60,9 +62,9 @@ def stack_results_lso(infile, outfile, **kwargs):
 
     kwargs.setdefault('theta_obs', 0.)
     kwargs.setdefault('dgrp', 'simEM')
-    kwargs.setdefault('entries', ['E0','E','D','X','Px','P0x','ID','ID1'])
-    kwargs.setdefault('entries_stack', ['X','Px','P0x'])
-    kwargs.setdefault('entries_save', ['E0','E','dt','Protsph','ID','ID1'])
+    kwargs.setdefault('entries', ['E0', 'E', 'D', 'X', 'Px', 'P0x', 'ID', 'ID1', 'W'])
+    kwargs.setdefault('entries_stack', ['X', 'Px', 'P0x'])
+    kwargs.setdefault('entries_save', ['E0', 'E', 'dt', 'Protsph', 'ID', 'ID1', 'W'])
     kwargs.setdefault('use_cosmo', True)
     kwargs.setdefault('Dsource', None)
 
@@ -191,9 +193,12 @@ class HistPrimary(object):
     def __init__(self, hist_prim, edges_obs, edges_true):
         """
 
-        :param hist_prim:
+        :param hist_prim: array-like
+            histogram of the primary gamma-ray spectrum per injected particle
         :param edges_obs:
+            observed energy edges
         :param edges_true:
+            true (injected) energy edges
         """
         self._data_orig = hist_prim * u.dimensionless_unscaled
         self._energy = MapAxis(edges_obs, interp='log', name='energy', node_type='edges')
@@ -270,7 +275,9 @@ class CascMap(object):
                  steps=10,
                  binsz=0.02,
                  width=6.,
-                 redshift=None
+                 redshift=None,
+                 smooth_kwargs={'kernel': Tophat2DKernel, 'threshold': 4, 'steps': 50},
+                 config=None
                  ):
         """
 
@@ -345,7 +352,13 @@ class CascMap(object):
 
         # redshift
         self._z = redshift
+
+        # init adaptive smoothing
+        self._asmooth = ASmooth(self._casc_obs, **smooth_kwargs)
         logging.info("Done.")
+
+        if config is not None:
+            self._config = config
 
     def apply_time_weights(self, look_back_times=None, weights=None, interpolation_type='nearest'):
         """
@@ -482,6 +495,10 @@ class CascMap(object):
     def energy_true(self):
         return self._energy_true
 
+    @property
+    def config(self):
+        return self._config
+
     @staticmethod
     def gen_from_hd5f(infile, skycoord,
                       dgrp='simEM',
@@ -534,10 +551,43 @@ class CascMap(object):
         if isinstance(infile, str):
             infile = [infile]
 
+        binsz, config, edges, n_injected_particles, values, width = CascMap.prep_cascade_hist_from_hdf5(infile,
+                                                                                                dgrp=dgrp,
+                                                                                                binsz=binsz,
+                                                                                                ebins=ebins,
+                                                                                                lightcurve=lightcurve,
+                                                                                                width=width)
+
+        hist_casc, hist_prim, edges_prim = CascMap.build_nd_histogram(edges,
+                                                                      values,
+                                                                      id_detection=id_detection,
+                                                                      id_injected=config['Source']['Composition'],
+                                                                      config=config)
+
+        # divide histogram by injected number of particles
+        hist_casc /= n_injected_particles[np.newaxis, :, np.newaxis, np.newaxis, np.newaxis]
+        if hist_prim is not None:
+            hist_prim /= n_injected_particles[:, np.newaxis]
+
+        return CascMap(hist_casc,
+                       edges,
+                       skycoord,
+                       hist_prim=hist_prim,
+                       edges_prim=edges_prim,
+                       binsz=binsz,
+                       width=width,
+                       redshift=config['Source']['z'],
+                       config=config
+                       )
+
+    @staticmethod
+    def prep_cascade_hist_from_hdf5(infile, binsz=0.02, dgrp='simEM', ebins=41, lightcurve=None, width=6.):
+        """
+        Helper function to create a histogram from a list of hdf5 files
+        """
+
         # edges for histogram
         edges = OrderedDict({})
-
-
         # read in data values
         values = {}
         tmin, tmin_data, tmax_data = [], [], []
@@ -586,30 +636,29 @@ class CascMap(object):
                 values['energy_true'] = data['E0'][()]
                 values['energy'] = data['E'][()]
                 values['t_delay'] = data['dt'][()]
-                values['lon'] = data['Protsph'][1,:]
-                values['lat'] = data['Protsph'][2,:]
+                values['lon'] = data['Protsph'][1, :]
+                values['lat'] = data['Protsph'][2, :]
                 values['id_obs'] = data['ID'][()]
                 values['id_parent'] = data['ID1'][()]
+                values['weights'] = data['W'][()]
 
             else:
                 values['energy_true'] = np.append(values['energy_true'], data['E0'][()])
                 values['energy'] = np.append(values['energy'], data['E'][()])
                 values['t_delay'] = np.append(values['t_delay'], data['dt'][()])
-                values['lon'] = np.append(values['lon'], data['Protsph'][1,:])
-                values['lat'] = np.append(values['lat'], data['Protsph'][2,:])
+                values['lon'] = np.append(values['lon'], data['Protsph'][1, :])
+                values['lat'] = np.append(values['lat'], data['Protsph'][2, :])
                 values['id_obs'] = np.append(values['id_obs'], data['ID'][()])
                 values['id_parent'] = np.append(values['id_parent'], data['ID1'][()])
+                values['weights'] = np.append(values['weights'], data['W'][()])
 
             hfile.close()
 
         edges['energy_true'] *= u.eV
-
         if not np.all(np.array(tmin) == tmin[0]):
             logging.warning("Not all time resolutions are equal, selecting maximum")
-
         # time resolution
         tmin = np.max(tmin)
-
         # minimum time within time resolution, set all values < 0. to zero
         if -1. * tmin < np.min(tmin_data) <= 0.:
             logging.info("minimum delay time <= 0. but within resolution, forcing to zero")
@@ -630,16 +679,13 @@ class CascMap(object):
         else:
             first_bin = np.max([tmin, 1.])
             edges['t_delay'] = np.append(
-                np.insert(np.logspace(np.log10(first_bin),7,8),
+                np.insert(np.logspace(np.log10(first_bin), 7, 8),
                           0,
                           insert_tmin),
                 np.max(tmax_data)
             )
-
         edges['t_delay'] *= u.yr
         logging.info("Time bins: {0}".format(edges['t_delay']))
-
-
         # observed energy bins
         if isinstance(ebins, int):
             edges['energy'] = np.logspace(np.log10(values['energy'].min()),
@@ -655,43 +701,21 @@ class CascMap(object):
         # phi
         binsz *= u.deg / u.pixel
         width *= u.deg
-        nbins = np.ceil(2.*width/2./binsz).astype(np.int)
-        edges['lon'] = np.linspace(-width.value/2.,
-                                   width.value/2.,
+        nbins = np.ceil(2. * width / 2. / binsz).astype(np.int)
+        edges['lon'] = np.linspace(-width.value / 2.,
+                                   width.value / 2.,
                                    nbins.value + 1) * width.unit
         # theta
-        edges['lat'] = np.linspace(90.-width.value/2.,
-                                   90. + width.value/2.,
+        edges['lat'] = np.linspace(90. - width.value / 2.,
+                                   90. + width.value / 2.,
                                    nbins.value + 1) * width.unit
-
         # create a numpy histogram for the cascade
         # and potentially for the source
-
         # first make sure ordering is correct
         # needs to be in order t_delay, energy_true, energy, lon, lat
         keys = ['t_delay', 'energy_true', 'energy', 'lon', 'lat']
         edges = OrderedDict((k, edges[k]) for k in keys)
-
-        hist_casc, hist_prim, edges_prim = CascMap.build_nd_histogram(edges,
-                                                                      values,
-                                                                      id_detection=id_detection,
-                                                                      id_injected=config['Source']['Composition'],
-                                                                      config=config)
-
-        # divide histogram by injected number of particles
-        hist_casc /= n_injected_particles[np.newaxis, :, np.newaxis, np.newaxis, np.newaxis]
-        if hist_prim is not None:
-            hist_prim /= n_injected_particles[:, np.newaxis]
-
-        return CascMap(hist_casc,
-                       edges,
-                       skycoord,
-                       hist_prim=hist_prim,
-                       edges_prim=edges_prim,
-                       binsz=binsz,
-                       width=width,
-                       redshift=config['Source']['z']
-                       )
+        return binsz, config, edges, n_injected_particles, values, width
 
     @staticmethod
     def build_nd_histogram(edges, values, config=None, id_detection=22, id_injected=None):
@@ -719,7 +743,9 @@ class CascMap(object):
             # build the histogram
             logging.info("Building the cascade histogram ...")
             logging.info("Bin shapes: {0}".format([v.shape for v in edges.values()]))
-            hist_casc, _ = np.histogramdd(data_casc.T, bins=list(edges.values()))
+            hist_casc, _ = np.histogramdd(data_casc.T, bins=list(edges.values()),
+                                          weights=values['weights'][mc])
+            print ("used weights", values['weights'][mc])
         else:
             raise ValueError("no events pass cascade criterion")
 
@@ -739,11 +765,14 @@ class CascMap(object):
                     # edges['e_true'] / ( 1 + z) are the observed energies
                     hist_prim, edges_prim = np.histogramdd(data_primary.T,
                                                            bins=(edges['energy_true'],
-                                                                 edges['energy_true'] / (1. + config['Source']['z']))
+                                                                 edges['energy_true'] / (1. + config['Source']['z'])),
+                                                           weights=values['weights'][mi]
                                                            )
                 else:
                     hist_prim, edges_prim = np.histogramdd(data_primary.T,
-                                                           bins=(edges['energy_true'], edges['energy']))
+                                                           bins=(edges['energy_true'], edges['energy']),
+                                                           weights=values['weights'][mi]
+                                                           )
                 edges_prim = [e * edges['energy_true'].unit for e in edges_prim]
             else:
                 logging.warning("no events pass primary spectrum criterion")
@@ -796,7 +825,9 @@ class CascMap(object):
 
         # make sure that the right energy unit is used
         funit_split = f.unit.to_string().split('/')
-        if not funit_split[0] == "1.":
+
+        # Is f in E^2 dN / dE?
+        if not "1" in funit_split[0]:
             funit_split[0] = target_unit + " / "
             f = f.to(' '.join(funit_split))
 
@@ -818,13 +849,15 @@ class CascMap(object):
         weights *= target_weight_unit * self._einj.unit
         return weights
 
-
-    def apply_spectral_weights(self, injspec):
+    def apply_spectral_weights(self, injspec, smooth=False):
         """
         Apply weights to compute cascade for an arbitrary spectrum
 
         :param injspec: function pointer
             function that takes energy as Quantity and returns flux per energy
+
+        :param smooth: bool
+            if True, apply adaptive smoothing to the cascade in each energy bin
         :return:
         """
         weights = self._compute_spectral_weights(injspec)
@@ -844,6 +877,11 @@ class CascMap(object):
             self._casc_obs = \
                 (self._casc * self._weights[:, np.newaxis, np.newaxis, np.newaxis]).sum_over_axes(['energy_true'])
             self._casc_obs /= self._casc_obs_bin_volume
+
+        if smooth:
+            self._asmooth.input_map = self._casc_obs
+            res = self._asmooth.smooth()
+            self._casc_obs = res["map"]
 
     def rotation(self, angle, **kwargs):
         """
@@ -877,6 +915,9 @@ class CascMap(object):
         ----------
         region: `~regions.Region`
              Region (pixel or sky regions accepted).
+
+        add_primary: bool
+            add the primary spectrum to the central pixel
 
         Returns
         -------
@@ -921,6 +962,68 @@ class CascMap(object):
                                 dn_de_primary / self._spatial_bin_size[idx_int[0], idx_int[1]]
                                 )
         return casc_tot
+
+    def export_casc_obs_to_fits(self, filename,
+                                target_energy_unit='MeV',
+                                target_flux_unit='MeV-1 s-1 cm-2 sr-1',
+                                overwrite=True,
+                                conv='fgst-template',
+                                add_primary=False,
+                                hdu_bands='ENERGIES',
+                                extra_header_dict=None
+                                ):
+        """
+        Export the current observed cascade flux to a fits file,
+        compatible with a Fermi analysis.
+
+        :param filename: str,
+            path the fits file
+        :param target_energy_unit:
+            The target unit for the energy axis. Default: MeV
+        :param target_flux_unit:
+            The target unit for the flux. Default: MeV-1 s-1 cm-2 sr-1
+        :param overwrite: bool
+            Overwrite existing fits file
+        :param conv: str
+            {'gadf', 'fgst-ccube','fgst-template'}
+            FITS format convention. Default: fgst-template
+        :param add_primary: bool
+            Add the primary spectrum to the central pixel. Default: False
+        :param hdu_bands: str
+            Name of the fits extension containing the energies. Default: ENERGIES
+        :param extra_header_dict: dict
+            Dictionary with additional key words for the header["META"] key word.
+        :return:
+        """
+        if add_primary:
+            map_export = self.add_primary_to_casc()
+        else:
+            map_export = self._casc_obs.copy()
+
+        # force values smaller than zero to zero
+        m = map_export.data <= 0.
+        map_export.data[m] = 1e-40
+        # change the unit of flux
+        map_export.quantity = map_export.quantity.to(target_flux_unit)
+
+        # change the unit of the energy axis
+        idx = map_export.geom.get_axis_index_by_name("energy")
+        map_export.geom.axes[idx].edges = map_export.geom.axes[idx].edges.to(target_energy_unit)
+        map_export.geom.axes[idx].center = map_export.geom.axes[idx].center.to(target_energy_unit)
+        # ugly work around
+        map_export.geom.axes[idx]._unit = u.Unit("MeV")
+        hdu_list = map_export.to_hdulist(conv=conv, hdu_bands=hdu_bands)
+
+        if extra_header_dict is not None:
+            if 'META' in hdu_list[0].header.keys():
+                d = yaml.safe_load(hdu_list[0].header['META'])
+                d.update(extra_header_dict)
+            else:
+                d = extra_header_dict
+            hdu_list[0].header['META'] = str(d)
+
+        hdu_list.writeto(filename, overwrite=overwrite)
+
 
 class SkyDiffuseCascadeCube(SkyModelBase):
     """Cube sky map model for electromagnetic cascades.
@@ -1074,3 +1177,273 @@ class SkyDiffuseCascadeCube(SkyModelBase):
         return str_.expandtabs(tabsize=2)
 
     # TODO covariance handling
+
+
+class ASmooth(object):
+    """
+    Adaptively smooth an image.
+
+    Achieves a roughly constant significance of features across the whole image.
+
+    Adopted for Cascade model maps.
+
+    Algorithm based on https://ui.adsabs.harvard.edu/abs/2006MNRAS.368...65E
+    """
+
+    def __init__(self, input_map, kernel=Tophat2DKernel, threshold=4., steps=50):
+
+
+        # this should be 3. / 8. for a Tophat kernel according to ASmooth paper
+        # but 1./8. gives better results for my case
+        self._result = {}
+        self._max_scale_factor = 1. / 8.
+
+        self._threshold = threshold
+        self._steps = steps
+        self._scales = None
+        self._input_map = input_map
+        self._kernel = kernel
+
+        self._set_scale()
+
+    def _set_scale(self):
+        min_angular_scale = self._input_map.geom.pixel_scales.min().to("deg")
+        width = self._input_map.geom.width.min().to("deg")
+        self._scales = np.linspace(min_angular_scale.value, width.value / 2. * self._max_scale_factor) * u.deg
+
+    @property
+    def input_map(self):
+        return self._input_map
+
+    @property
+    def threshold(self):
+        return self._threshold
+
+    @property
+    def kernel(self):
+        return self._kernel
+
+    @threshold.setter
+    def threshold(self, threshold):
+        self._threshold = threshold
+
+    @input_map.setter
+    def input_map(self, input_map):
+        self._input_map = input_map
+        self._set_scale()
+
+    @kernel.setter
+    def kernel(self, kernel):
+        self._kernel = kernel
+
+    def kernels(self, pixel_scale):
+        """
+        Ring kernels according to the specified method.
+
+        Parameters
+        ----------
+        pixel_scale : `~astropy.coordinates.Angle`
+            Sky image pixel scale
+
+        Returns
+        -------
+        kernels : list
+            List of `~astropy.convolution.Kernel`
+        """
+        # kernels operate in pixel space
+        scales = self._scales.to_value("deg") / Angle(pixel_scale).deg
+        logging.debug("kernel scales: {0}".format(scales))
+
+        kernels = []
+        for scale in scales:  # .value:
+            kernel = self._kernel(scale, mode="oversample")
+            # TODO: check if normalizing here makes sense
+            kernel.normalize("peak")
+            kernels.append(kernel)
+
+        return kernels
+
+    @staticmethod
+    def _significance(counts):
+        """
+        This should be the significance according to formula (5) in asmooth paper.
+        Since we're dealing with a pure simulation here, we opt for
+        a different definition, namely the counts above the mean value.
+        """
+        #return (counts - background) / np.sqrt(counts + background)
+        mean = counts.mean()
+        if not mean:
+            mean = 1e-50
+        return counts / mean
+
+    def smooth(self, axis_name='energy'):
+        """
+        Run adaptive smoothing on input Map.
+
+        Parameters
+        ----------
+        axis_name: str
+            Name of axis that will be looped over
+
+        Returns
+        -------
+        images : dict of `~gammapy.maps.WcsNDMap`
+            Smoothed images; keys are:
+                * 'map'
+                * 'scales'
+                * 'significance'.
+        """
+        pixel_scale = self._input_map.geom.pixel_scales.mean()
+
+        # for each chosen scale, generate a kernel
+        kernels = self.kernels(pixel_scale)
+
+        for k in ["map", "scale", "significance"]:
+            self._result[k] = self._input_map.copy()
+
+        self._result["scale"].unit = "deg"
+        self._result["significance"].unit = ""
+
+        cubes = {}
+
+        # loop over energy bins
+        for i in range(self._input_map.geom.get_axis_by_name(axis_name).center.size):
+            # for each of the chosen scales,
+            # this does the convolution
+            cubes["map"] = scale_cube(self._input_map.slice_by_idx({axis_name: i}).data, kernels)
+
+            # Compute significance for each convolution scale
+            cubes["significance"] = self._significance(cubes["map"])
+            smoothed = self._reduce_cubes(cubes, kernels)
+
+            # set remaining pixels with significance < threshold to constant value
+            for key in ["map", "scale", "significance"]:
+                data = smoothed[key]
+
+                # set remaining pixels with significance < threshold to mean value
+                if key in ["map"]:
+                    mask = np.isnan(data)
+                    data[mask] = 0.  # np.mean(locals()[key].data[mask])
+                    self._result[key].data[i] = data
+                else:
+                    self._result[key].data[i] = data
+
+        return self._result
+
+    def _reduce_cubes(self, cubes, kernels):
+        """
+        Combine scale cube to image.
+
+        Parameters
+        ----------
+        cubes : dict
+            Data cubes
+        """
+        shape = cubes["map"].shape[:2]
+        smoothed = {}
+
+        # Init smoothed data arrays
+        for key in ["map", "scale", "significance"]:
+            smoothed[key] = np.tile(np.nan, shape)
+
+        # loop over all kernels to adaptively smooth image
+        for idx, scale in enumerate(self._scales):
+            # slice out 2D image at index idx out of cube
+            slice_ = np.s_[:, :, idx]
+
+            mask = np.isnan(smoothed["map"])
+            mask = (cubes["significance"][slice_] > self._threshold) & mask
+
+            smoothed["scale"][mask] = scale
+            smoothed["significance"][mask] = cubes["significance"][slice_][mask]
+
+            # renormalize smoothed data arrays
+            norm = kernels[idx].array.sum()
+            for key in ["map"]:
+                smoothed[key][mask] = cubes[key][slice_][mask] / norm
+
+        return smoothed
+
+    def diagnostic_plots(self, fig=None, fig2=None, cmap='cubehelix_r', slice="sum", axis='energy', cutout=None,
+                         width=0.1 * u.deg):
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Rectangle
+
+        if fig is None:
+            fig = plt.figure(1, figsize=(10, 10))
+        if fig2 is None:
+            fig2 = plt.figure(2, figsize=(6, 4))
+
+        if cutout is None:
+            cutout = self._input_map.geom.width
+
+        c = self._input_map.geom.center_skydir
+
+        if isinstance(slice, int):
+            sig = self._result["significance"].slice_by_idx({axis: slice})
+            scale = self._result["scale"].slice_by_idx({axis: slice})
+            input_map = self._input_map.slice_by_idx({axis: slice})
+            smooth = self._result["map"].slice_by_idx({axis: slice})
+
+            ax00 = fig.add_subplot(221, projection=input_map.cutout(c, width=cutout).geom.wcs)
+            ax01 = fig.add_subplot(222, projection=smooth.cutout(c, width=cutout).geom.wcs)
+            ax10 = fig.add_subplot(223, projection=sig.cutout(c, width=cutout).geom.wcs)
+            ax11 = fig.add_subplot(224, projection=scale.cutout(c, width=cutout).geom.wcs)
+
+            sig.cutout(c, width=cutout).plot(
+                ax=ax10, add_cbar=True, stretch='log', cmap=cmap)
+            scale.cutout(c, width=cutout).plot(
+                ax=ax11, add_cbar=True, stretch='log', cmap=cmap)
+
+        elif isinstance(slice, str) and slice == 'sum':
+            input_map = self._input_map.sum_over_axes([axis])
+            smooth = self._result["map"].sum_over_axes([axis])
+
+            ax00 = fig.add_subplot(221, projection=input_map.cutout(c, width=cutout).geom.wcs)
+            ax01 = fig.add_subplot(222, projection=smooth.cutout(c, width=cutout).geom.wcs)
+
+        else:
+            raise ValueError("Value of slice keyword not understood")
+
+        input_map.cutout(c, width=cutout).plot(
+            ax=ax00, add_cbar=True, stretch='log', cmap=cmap)
+        smooth.cutout(c, width=cutout).plot(
+            ax=ax01, add_cbar=True, stretch='log', cmap=cmap)
+
+        for a in [ax00, ax01]:
+            if a == ax00:
+                cmap = plt.cm.Blues
+            else:
+                cmap = plt.cm.Reds
+
+            r1 = Rectangle((c.ra.value - self._input_map.geom.width[0, 0].value / 2.,
+                            c.dec.value - width.value / 2.),
+                           self._input_map.geom.width[0, 0].value, width.value,
+                           edgecolor=cmap(0.9), facecolor='none', ls='--',
+                           transform=a.get_transform('fk5'))
+
+            r2 = Rectangle((c.ra.value - width.value / 2.,
+                            c.dec.value - self._input_map.geom.width[1, 0].value / 2.),
+                           width.value, self._input_map.geom.width[0, 0].value,
+                           edgecolor=cmap(0.7), facecolor='none', ls='--',
+                           transform=a.get_transform('fk5'))
+#
+            a.add_patch(r1)
+            a.add_patch(r2)
+
+        # plot lon and lat profiles
+        ax20 = fig2.add_subplot(211)
+        ax21 = fig2.add_subplot(212)
+
+        ax20.semilogy(input_map.cutout(c, width=(self._input_map.geom.width[0, 0], width)).data.sum(axis=0),
+                      color=plt.cm.Blues(0.9))
+        ax20.semilogy(smooth.cutout(c, width=(self._input_map.geom.width[0, 0], width)).data.sum(axis=0),
+                      color=plt.cm.Reds(0.9), ls='--')
+
+        ax21.semilogy(input_map.cutout(c, width=(width, self._input_map.geom.width[1, 0])).data.sum(axis=1),
+                      color=plt.cm.Blues(0.7))
+        ax21.semilogy(smooth.cutout(c, width=(width, self._input_map.geom.width[1, 0])).data.sum(axis=1),
+                      color=plt.cm.Reds(0.7), ls='--')
+
+        return fig, fig2
+
