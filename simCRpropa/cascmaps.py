@@ -16,7 +16,11 @@ from gammapy.modeling.models.cube import SkyModelBase
 from gammapy.modeling.parameter import _get_parameters_str
 from gammapy.modeling import Parameter, Parameters
 from astropy.coordinates import Angle
-from gammapy.maps import WcsNDMap, scale_cube
+from gammapy import __version__ as gpv
+if float(gpv.split('.')[1]) > 16 or float(gpv.split('.')[0]) > 0:
+    from gammapy.utils.array import scale_cube
+else:
+    from gammapy.maps import scale_cube
 from astropy.convolution import Tophat2DKernel
 
 
