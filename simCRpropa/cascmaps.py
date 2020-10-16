@@ -748,7 +748,7 @@ class CascMap(object):
             # build the histogram
             logging.info("Building the cascade histogram ...")
             logging.info("Bin shapes: {0}".format([v.shape for v in edges.values()]))
-            hist_casc, _ = np.histogramdd(data_casc.T, bins=list(edges.values()),
+            hist_casc, _ = np.histogramdd(data_casc.T, bins=[e.value for e in edges.values()],
                                           weights=values['weights'][mc])
             print ("used weights", values['weights'][mc])
         else:
@@ -769,8 +769,8 @@ class CascMap(object):
                     # edges['e_true'] contain the injected energies
                     # edges['e_true'] / ( 1 + z) are the observed energies
                     hist_prim, edges_prim = np.histogramdd(data_primary.T,
-                                                           bins=(edges['energy_true'],
-                                                                 edges['energy_true'] / (1. + config['Source']['z'])),
+                                                           bins=(edges['energy_true'].value,
+                                                                 edges['energy_true'].value / (1. + config['Source']['z'])),
                                                            weights=values['weights'][mi]
                                                            )
                 else:

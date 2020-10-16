@@ -190,35 +190,35 @@ class SimCRPropa(object):
         self.config = deepcopy(kwargs)
         self.__dict__.update(self.config)
 
-        self.D = redshift2ComovingDistance(self.Source['z']) # comoving source distance
         self.emcasc = self.Simulation['emcasc']
 
-        if type(self.Bfield['B']) == list:
-            self._bList = deepcopy(self.Bfield['B'])
-            self.Bfield['B'] = self._bList[0]
-        elif type(self.Bfield['B']) == float:
-            self._bList = [self.Bfield['B']]
-        else:
-            raise Exception("B type not understood: {0}".format(
-                type(self.Bfield['maxTurbScale'])))
+        for i, k in enumerate(['B', 'maxTurbScale']):
+            if isinstance(self.Bfield[k], list):
+                x = deepcopy(self.Bfield[k])
+                self.Bfield[k] = x[0]
+            elif isinstance(self.Bfield[k], float):
+                x = [self.Bfield[k]]
+            else:
+                raise ValueError("{0:s} type not understood: {1}".format(
+                    type(k, self.Bfield[k])))
+            if not i:
+                self._bList = x
+            else:
+                self._turbScaleList = x
 
-        if type(self.Bfield['maxTurbScale']) == list:
-            self._turbScaleList = deepcopy(self.Bfield['maxTurbScale'])
-            self.Bfield['maxTurbScale'] = self._turbScaleList[0]
-        elif type(self.Bfield['maxTurbScale']) == float:
-            self._turbScaleList = [self.Bfield['maxTurbScale']]
-        else:
-            raise Exception("maxTurbScale type not understood: {0}".format(
-                type(self.Bfield['maxTurbScale'])))
-
-        if type(self.Source['th_jet']) == list:
-            self._th_jetList = deepcopy(self.Source['th_jet'])
-            self.Source['th_jet'] = self._th_jetList[0]
-        elif type(self.Bfield['maxTurbScale']) == float:
-            self._th_jetList = [self.Source['th_jet']]
-        else:
-            raise Exception("maxTurbScale type not understood: {0}".format(
-                type(self.Bfield['maxTurbScale'])))
+        for i, k in enumerate(['th_jet', 'z']):
+            if isinstance(self.Source[k], list):
+                x = deepcopy(self.Source[k])
+                self.Source[k] = x[0]
+            elif isinstance(self.Source[k], float):
+                x = [self.Source[k]]
+            else:
+                raise ValueError("{0:s} type not understood: {1}".format(
+                    type(k, self.Source[k])))
+            if not i:
+                self._th_jetList= x
+            else:
+                self._zList = x
 
         if 'IRB_Gilmore12' in self.Bfield['EBL']:
             self._EBL = IRB_Gilmore12 #Dominguez11, Finke10, Franceschini08
@@ -291,23 +291,25 @@ class SimCRPropa(object):
                                                                     dt))
         return
 
-    def setOutput(self,jobid, idB = 0, idL = 0, it = 0):
+    def setOutput(self,jobid, idB=0, idL=0, it=0, iz=0):
         """Set output file and directory"""
         self.OutName = 'casc_{0:05n}.dat'.format(jobid)
 
         self.Source['th_jet'] = self._th_jetList[it]
+        self.Source['z'] = self._zList[iz]
+        self.D = redshift2ComovingDistance(self.Source['z']) # comoving source distance
 
         # append options to file path
         self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['basedir'],
                                 'z{0[z]:.3f}'.format(self.Source)))
         if self.Source.get('source_morphology', 'cone') == 'cone':
-            self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['basedir'],
+            self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['outdir'],
                             'th_jet{0[th_jet]}/'.format(self.Source)))
         elif self.Source.get('source_morphology', 'cone') == 'iso':
-            self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['basedir'],
+            self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['outdir'],
                                                 'iso/'))
         elif self.Source.get('source_morphology', 'cone') == 'dir':
-            self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['basedir'],
+            self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['outdir'],
                                                 'dir/'))
         else:
             raise ValueError("Chosen source morphology not supported.")
@@ -714,47 +716,50 @@ class SimCRPropa(object):
         for ib, b in enumerate(self._bList):
             for il, l in enumerate(self._turbScaleList):
                 for it, t in enumerate(self._th_jetList):
-                    njobs = int(self.Simulation['multiplicity'])
-                    self.Bfield['B'] = b
-                    self.Bfield['maxTurbScale'] = l
-                    self.Source['th_jet'] = t
-                    self.setOutput(0, idB = ib, idL = il, it = it)
+                    for iz, z in enumerate(self._zList):
+                        njobs = int(self.Simulation['multiplicity'])
+                        self.Bfield['B'] = b
+                        self.Bfield['maxTurbScale'] = l
+                        self.Source['th_jet'] = t
+                        self.Source['z'] = z
+                        self.D = redshift2ComovingDistance(self.Source['z']) # comoving source distance
+                        self.setOutput(0, idB=ib, idL=il, it=it, iz=iz)
 
-                    outfile = path.join(self.FileIO['outdir'],self.OutName.split('_')[0] + '*.hdf5')
-                    missing = utils.missing_files(outfile,njobs, split = '.hdf5')
-                    self.config['Simulation']['n_cpu'] = kwargs['n']
+                        outfile = path.join(self.FileIO['outdir'],self.OutName.split('_')[0] + '*.hdf5')
+                        missing = utils.missing_files(outfile,njobs, split = '.hdf5')
+                        self.config['Simulation']['n_cpu'] = kwargs['n']
 
 
-                    if len(missing) < njobs:
-                        logging.debug('here {0}'.format(njobs))
-                        njobs = missing
-                        logging.info('there are {0:n} files missing in {1:s}'.format(len(missing),
-                        outfile ))
+                        if len(missing) < njobs:
+                            logging.debug('here {0}'.format(njobs))
+                            njobs = missing
+                            logging.info('there are {0:n} files missing in {1:s}'.format(len(missing),
+                            outfile ))
 
-                    if len(missing) and not force_combine:
-                        self.config['configname'] = 'r'
-                        kwargs['logdir'] = path.join(self.FileIO['outdir'],'log/')
-                        kwargs['tmpdir'] = path.join(self.FileIO['outdir'],'tmp/')
-                        kwargs['jname'] = 'b{0:.2f}l{1:.2f}'.format(np.log10(b),np.log10(l))
-                        kwargs['log'] = path.join(kwargs['logdir'], kwargs['jname'] + ".out")
-                        kwargs['err'] = path.join(kwargs['logdir'], kwargs['jname'] + ".err")
-                        lsf.submit_lsf(script,
-                            self.config,'',njobs, 
-                            **kwargs)
-                    else:
-                        if len(missing) and force_combine:
-                            logging.info("There are files missing but combining anyways.")
+                        if len(missing) and not force_combine:
+                            self.config['configname'] = 'r'
+                            kwargs['logdir'] = path.join(self.FileIO['outdir'],'log/')
+                            kwargs['tmpdir'] = path.join(self.FileIO['outdir'],'tmp/')
+                            kwargs['jname'] = 'b{0:.2f}l{1:.2f}'.format(np.log10(b),np.log10(l))
+                            kwargs['log'] = path.join(kwargs['logdir'], kwargs['jname'] + ".out")
+                            kwargs['err'] = path.join(kwargs['logdir'], kwargs['jname'] + ".err")
+                            lsf.submit_lsf(script,
+                                self.config,'',njobs, 
+                                **kwargs)
                         else:
-                            logging.info("All files present.")
+                            if len(missing) and force_combine:
+                                logging.info("There are files missing but combining anyways.")
+                            else:
+                                logging.info("All files present.")
 
-                        ffdat = glob(path.join(path.dirname(outfile),
+                            ffdat = glob(path.join(path.dirname(outfile),
                                                path.basename(outfile).split('.hdf5')[0] + '.dat'))
-                        if len(ffdat):
-                            logging.info("Deleting *.dat files.")
-                            for f in ffdat:
-                                utils.rm(f)
+                            if len(ffdat):
+                                logging.info("Deleting *.dat files.")
+                                for f in ffdat:
+                                    utils.rm(f)
 
-                        collect.combine_output(outfile, overwrite=overwrite_combine)
+                            collect.combine_output(outfile, overwrite=overwrite_combine)
         return
 
 @lsf.setLsf

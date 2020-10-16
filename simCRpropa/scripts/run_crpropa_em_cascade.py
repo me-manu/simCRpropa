@@ -34,6 +34,8 @@ if __name__ == '__main__':
                         help='Set local or scratch calculation', type=int)
     parser.add_argument('-l', required=False, default = 0, 
                         help='If > 0, limit memory to this size in mega bytes', type=int)
+    parser.add_argument('--show-progress', action="store_true",
+                        help='show the progress bar')
     args = parser.parse_args()
     utils.init_logging('DEBUG', color = False)
 
@@ -93,7 +95,7 @@ if __name__ == '__main__':
 
         sim._create_source()
         # run simulation
-        if not job_id:
+        if not job_id or args.show_progress:
             sim.m.setShowProgress(True)
         else:
             sim.m.setShowProgress(False)
