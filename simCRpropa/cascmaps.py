@@ -750,7 +750,7 @@ class CascMap(object):
             logging.info("Bin shapes: {0}".format([v.shape for v in edges.values()]))
             hist_casc, _ = np.histogramdd(data_casc.T, bins=[e.value for e in edges.values()],
                                           weights=values['weights'][mc])
-            print ("used weights", values['weights'][mc])
+            #print ("used weights", values['weights'][mc])
         else:
             raise ValueError("no events pass cascade criterion")
 
