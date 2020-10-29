@@ -15,6 +15,7 @@ from scipy.interpolate import UnivariateSpline, interp1d
 from gammapy.modeling.models.cube import SkyModelBase
 from gammapy.modeling.parameter import _get_parameters_str
 from gammapy.modeling import Parameter, Parameters
+from regions import CircleSkyRegion
 from astropy.coordinates import Angle
 from gammapy import __version__ as gpv
 if float(gpv.split('.')[1]) > 16 or float(gpv.split('.')[0]) > 0:
@@ -1028,6 +1029,71 @@ class CascMap(object):
             hdu_list[0].header['META'] = str(d)
 
         hdu_list.writeto(filename, overwrite=overwrite)
+
+    def plot_spectrum(self,
+                      radius=None,
+                      on_region=None,
+                      ax=None,
+                      fig=None):
+        """
+        Plot the cascade spectrum
+
+
+        :param on_region: extraction region or None
+            region in which cascade is contribution is summed up
+        :param radius: str or None
+            if string, should be the angle of circular extraction region compatible with Angle, e.g., "0.1 deg".
+            Will overwrite on_region.
+        :return:
+        """
+        import matplotlib.pyplot as plt
+
+        if fig is None:
+            fig = plt.figure(figsize=(6,4))
+        if ax is None:
+            ax = fig.add_subplot(111)
+
+        if radius is not None:
+            on_region = CircleSkyRegion(self._casc_obs.geom.center_skydir,
+                                        radius=Angle(radius))
+
+        spec_halo = self.get_obs_spectrum(
+            region=on_region
+            )
+
+        spec_tot = self.get_obs_spectrum(
+            region=on_region,
+            add_primary=True
+            )
+
+        ax.errorbar(spec_halo.energy.center.value,
+                    spec_halo.quantity.value * spec_halo.energy.center.value ** 2.,
+                    xerr=spec_halo.energy.bin_width.value / 2.,
+                    marker='.',
+                    label=r'Cascade $\gamma$-ray spectrum'
+                    )
+
+        ax.errorbar(self._primary.energy.center.value,
+                    self._primary.get_obs_spectrum().value * self._primary.energy.center.value ** 2.,
+                    xerr=self._primary.energy.bin_width.value / 2.,
+                    marker='.',
+                    label=r'Primary $\gamma$-ray spectrum'
+                    )
+
+        ax.errorbar(spec_tot.energy.center.value,
+                     spec_tot.quantity.value * spec_tot.energy.center.value ** 2.,
+                     xerr=spec_tot.energy.bin_width.value / 2.,
+                     marker='.',
+                     label=r'Total observed $\gamma$-ray spectrum'
+                     )
+
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+
+        ax.set_xlabel("Energy ({0:s})".format(spec_halo.energy.unit))
+        ax.set_ylabel("$E^2 dN/dE$ ({0:s})".format(spec_halo.quantity.unit * spec_halo.energy.unit ** 2.))
+
+        return fig, ax
 
 
 class SkyDiffuseCascadeCube(SkyModelBase):
