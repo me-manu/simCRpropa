@@ -18,11 +18,12 @@ from gammapy.modeling import Parameter, Parameters
 from regions import CircleSkyRegion
 from astropy.coordinates import Angle
 from gammapy import __version__ as gpv
+from astropy.convolution import Tophat2DKernel, Gaussian2DKernel
+
 if float(gpv.split('.')[1]) > 16 or float(gpv.split('.')[0]) > 0:
     from gammapy.utils.array import scale_cube
 else:
     from gammapy.maps import scale_cube
-from astropy.convolution import Tophat2DKernel
 
 
 def stack_results_lso(infile, outfile, **kwargs):
@@ -504,6 +505,10 @@ class CascMap(object):
     def config(self):
         return self._config
 
+    @property
+    def asmooth(self):
+        return self._asmooth
+
     @staticmethod
     def gen_from_hd5f(infile, skycoord,
                       dgrp='simEM',
@@ -512,6 +517,7 @@ class CascMap(object):
                       binsz=0.02,
                       id_detection=22,
                       lightcurve=None,
+                      smooth_kwargs={'kernel': Tophat2DKernel, 'threshold': 4, 'steps': 50}
                       ):
         # TODO allow to supply map WCS geometry?
         # TODO include some print / logging statements
@@ -582,7 +588,8 @@ class CascMap(object):
                        binsz=binsz,
                        width=width,
                        redshift=config['Source']['z'],
-                       config=config
+                       config=config,
+                       smooth_kwargs=smooth_kwargs
                        )
 
     @staticmethod
@@ -855,7 +862,7 @@ class CascMap(object):
         weights *= target_weight_unit * self._einj.unit
         return weights
 
-    def apply_spectral_weights(self, injspec, smooth=False):
+    def apply_spectral_weights(self, injspec, smooth=False, force_recompute=False):
         """
         Apply weights to compute cascade for an arbitrary spectrum
 
@@ -868,8 +875,8 @@ class CascMap(object):
         """
         weights = self._compute_spectral_weights(injspec)
         # weights did not change, return
-        if not self._weights.unit == u.dimensionless_unscaled and np.all(np.equal(weights,
-                                                                         self._weights)):
+        if not self._weights.unit == u.dimensionless_unscaled and not force_recompute \
+                and np.all(np.equal(weights, self._weights)):
             return
         # update
         else:
@@ -1297,6 +1304,10 @@ class ASmooth(object):
     def kernel(self):
         return self._kernel
 
+    @property
+    def steps(self):
+        return self._steps
+
     @threshold.setter
     def threshold(self, threshold):
         self._threshold = threshold
@@ -1309,6 +1320,10 @@ class ASmooth(object):
     @kernel.setter
     def kernel(self, kernel):
         self._kernel = kernel
+
+    @steps.setter
+    def steps(self, steps):
+        self._steps = steps
 
     def kernels(self, pixel_scale):
         """
