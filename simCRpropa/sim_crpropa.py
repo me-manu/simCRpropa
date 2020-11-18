@@ -206,6 +206,15 @@ class SimCRPropa(object):
             else:
                 self._turbScaleList = x
 
+        if np.isscalar(self.Simulation['multiplicity']):
+            self._multiplicity = list(np.full(len(self._bList),
+                                              self.Simulation['multiplicity']))
+        else:
+            self._multiplicity = self.Simulation['multiplicity']
+
+        if not len(self._multiplicity) == len(self._bList):
+            raise ValueError("Bfield and multiplicity lists must have same length!")
+
         for i, k in enumerate(['th_jet', 'z']):
             if isinstance(self.Source[k], list):
                 x = deepcopy(self.Source[k])
@@ -717,7 +726,8 @@ class SimCRPropa(object):
             for il, l in enumerate(self._turbScaleList):
                 for it, t in enumerate(self._th_jetList):
                     for iz, z in enumerate(self._zList):
-                        njobs = int(self.Simulation['multiplicity'])
+                        njobs = int(self._multiplicity[ib])
+                        self.Simulation['multiplicity'] = int(self._multiplicity[ib])
                         self.Bfield['B'] = b
                         self.Bfield['maxTurbScale'] = l
                         self.Source['th_jet'] = t

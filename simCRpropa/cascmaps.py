@@ -1066,9 +1066,12 @@ class CascMap(object):
             add_primary=True
             )
 
-        ax.errorbar(spec_halo.energy.center.value,
-                    spec_halo.quantity.value * spec_halo.energy.center.value ** 2.,
-                    xerr=spec_halo.energy.bin_width.value / 2.,
+        energy_halo = spec_halo.geom.get_axis_by_name('energy')
+        energy_tot = spec_tot.geom.get_axis_by_name('energy')
+
+        ax.errorbar(energy_halo.center.value,
+                    spec_halo.data[:, 0, 0] * energy_halo.center.value ** 2.,
+                    xerr=energy_halo.bin_width.value / 2.,
                     marker='.',
                     label=r'Cascade $\gamma$-ray spectrum'
                     )
@@ -1080,9 +1083,9 @@ class CascMap(object):
                     label=r'Primary $\gamma$-ray spectrum'
                     )
 
-        ax.errorbar(spec_tot.energy.center.value,
-                     spec_tot.quantity.value * spec_tot.energy.center.value ** 2.,
-                     xerr=spec_tot.energy.bin_width.value / 2.,
+        ax.errorbar(energy_tot.center.value,
+                     spec_tot.data[:, 0, 0] * energy_tot.center.value ** 2.,
+                     xerr=energy_tot.bin_width.value / 2.,
                      marker='.',
                      label=r'Total observed $\gamma$-ray spectrum'
                      )
@@ -1090,8 +1093,8 @@ class CascMap(object):
         ax.set_xscale('log')
         ax.set_yscale('log')
 
-        ax.set_xlabel("Energy ({0:s})".format(spec_halo.energy.unit))
-        ax.set_ylabel("$E^2 dN/dE$ ({0:s})".format(spec_halo.quantity.unit * spec_halo.energy.unit ** 2.))
+        ax.set_xlabel("Energy ({0:s})".format(energy_halo.unit))
+        ax.set_ylabel("$E^2 dN/dE$ ({0:s})".format(spec_halo.quantity.unit * energy_halo.unit ** 2.))
 
         return fig, ax
 
