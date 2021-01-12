@@ -1040,6 +1040,11 @@ class CascMap(object):
     def plot_spectrum(self,
                       radius=None,
                       on_region=None,
+                      energy_unit="GeV",
+                      E2dNdE_unit="TeV cm-2 s-1",
+                      kwargs_casc={},
+                      kwargs_tot={},
+                      kwargs_prim={},
                       ax=None,
                       fig=None):
         """
@@ -1054,6 +1059,18 @@ class CascMap(object):
         :return:
         """
         import matplotlib.pyplot as plt
+
+        plot_casc = kwargs_casc.pop("plot", True)
+        plot_prim = kwargs_prim.pop("plot", True)
+        plot_tot = kwargs_tot.pop("plot", True)
+
+        kwargs_casc.setdefault("label", r"Cascade $\gamma$-ray spectrum")
+        kwargs_prim.setdefault("label", r"Primary $\gamma$-ray spectrum")
+        kwargs_tot.setdefault("label", r"Total $\gamma$-ray spectrum")
+
+        kwargs_casc.setdefault("marker", ".")
+        kwargs_prim.setdefault("marker", ".")
+        kwargs_tot.setdefault("marker", ".")
 
         if fig is None:
             fig = plt.figure(figsize=(6,4))
@@ -1076,32 +1093,35 @@ class CascMap(object):
         energy_halo = spec_halo.geom.get_axis_by_name('energy')
         energy_tot = spec_tot.geom.get_axis_by_name('energy')
 
-        ax.errorbar(energy_halo.center.value,
-                    spec_halo.data[:, 0, 0] * energy_halo.center.value ** 2.,
-                    xerr=energy_halo.bin_width.value / 2.,
-                    marker='.',
-                    label=r'Cascade $\gamma$-ray spectrum'
-                    )
+        flux_unit_conversion = (spec_halo.quantity.unit * energy_halo.unit ** 2.).to(E2dNdE_unit)
 
-        ax.errorbar(self._primary.energy.center.value,
-                    self._primary.get_obs_spectrum().value * self._primary.energy.center.value ** 2.,
-                    xerr=self._primary.energy.bin_width.value / 2.,
-                    marker='.',
-                    label=r'Primary $\gamma$-ray spectrum'
-                    )
+        # plot cascade
+        if plot_casc:
+            ax.errorbar(energy_halo.center.to(energy_unit).value,
+                        spec_halo.data[:, 0, 0] * energy_halo.center.value ** 2. * flux_unit_conversion,
+                        xerr=energy_halo.bin_width.to(energy_unit).value / 2.,
+                        **kwargs_casc
+                        )
 
-        ax.errorbar(energy_tot.center.value,
-                     spec_tot.data[:, 0, 0] * energy_tot.center.value ** 2.,
-                     xerr=energy_tot.bin_width.value / 2.,
-                     marker='.',
-                     label=r'Total observed $\gamma$-ray spectrum'
-                     )
+        if plot_prim:
+            ax.errorbar(self._primary.energy.center.to(energy_unit).value,
+                        self._primary.get_obs_spectrum().value * self._primary.energy.center.value ** 2. * flux_unit_conversion,
+                        xerr=self._primary.energy.bin_width.to(energy_unit).value / 2.,
+                        **kwargs_prim
+                        )
+
+        if plot_tot:
+            ax.errorbar(energy_tot.center.to(energy_unit).value,
+                        spec_tot.data[:, 0, 0] * energy_tot.center.value ** 2. * flux_unit_conversion,
+                        xerr=energy_tot.bin_width.to(energy_unit).value / 2.,
+                        **kwargs_tot
+                        )
 
         ax.set_xscale('log')
         ax.set_yscale('log')
 
-        ax.set_xlabel("Energy ({0:s})".format(energy_halo.unit))
-        ax.set_ylabel("$E^2 dN/dE$ ({0:s})".format(spec_halo.quantity.unit * energy_halo.unit ** 2.))
+        ax.set_xlabel("Energy ({0:s})".format(energy_unit))
+        ax.set_ylabel("$E^2 dN/dE$ ({0:s})".format(E2dNdE_unit))
 
         return fig, ax
 

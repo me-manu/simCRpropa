@@ -750,7 +750,7 @@ class SimCRPropa(object):
                             self.config['configname'] = 'r'
                             kwargs['logdir'] = path.join(self.FileIO['outdir'],'log/')
                             kwargs['tmpdir'] = path.join(self.FileIO['outdir'],'tmp/')
-                            kwargs['jname'] = 'b{0:.2f}l{1:.2f}'.format(np.log10(b),np.log10(l))
+                            kwargs['jname'] = 'b{0:.2f}l{1:.2f}th{2:.2f}z{3:.3f}'.format(np.log10(b), np.log10(l), t, z)
                             kwargs['log'] = path.join(kwargs['logdir'], kwargs['jname'] + ".out")
                             kwargs['err'] = path.join(kwargs['logdir'], kwargs['jname'] + ".err")
                             lsf.submit_lsf(script,
@@ -787,6 +787,7 @@ def main(**kwargs):
     parser.add_argument('--overwrite', default = 0,help='overwrite existing combined files', type=int)
     parser.add_argument('--overwrite_combine', default = 0,help='overwrite existing combined files', type=int)
     parser.add_argument('--force_combine', default = 0,help='force the combination of files', type=int)
+    parser.add_argument('--resubmit-running-jobs', action="store_false", default=True, help='Resubmit jobs even if they are running')
     args = parser.parse_args()
     kwargs['dry'] = args.dry
     kwargs['time'] = args.time
@@ -794,6 +795,7 @@ def main(**kwargs):
     kwargs['sleep'] = args.sleep
     kwargs['n'] = args.n
     kwargs['span'] = args.span
+    kwargs['no_resubmit_running_jobs'] = args.resubmit_running_jobs
     
     utils.init_logging('DEBUG', color = True)
 
