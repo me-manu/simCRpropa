@@ -1045,6 +1045,7 @@ class CascMap(object):
                       kwargs_casc={},
                       kwargs_tot={},
                       kwargs_prim={},
+                      plot_errorbar=True,
                       ax=None,
                       fig=None):
         """
@@ -1097,23 +1098,43 @@ class CascMap(object):
 
         # plot cascade
         if plot_casc:
-            ax.errorbar(energy_halo.center.to(energy_unit).value,
+            if plot_errorbar:
+                ax.errorbar(energy_halo.center.to(energy_unit).value,
+                            spec_halo.data[:, 0, 0] * energy_halo.center.value ** 2. * flux_unit_conversion,
+                            xerr=energy_halo.bin_width.to(energy_unit).value / 2.,
+                            **kwargs_casc
+                            )
+            else:
+                ax.plot(energy_halo.center.to(energy_unit).value,
                         spec_halo.data[:, 0, 0] * energy_halo.center.value ** 2. * flux_unit_conversion,
-                        xerr=energy_halo.bin_width.to(energy_unit).value / 2.,
                         **kwargs_casc
                         )
 
         if plot_prim:
-            ax.errorbar(self._primary.energy.center.to(energy_unit).value,
-                        self._primary.get_obs_spectrum().value * self._primary.energy.center.value ** 2. * flux_unit_conversion,
-                        xerr=self._primary.energy.bin_width.to(energy_unit).value / 2.,
+            if plot_errorbar:
+                ax.errorbar(self._primary.energy.center.to(energy_unit).value,
+                            self._primary.get_obs_spectrum().value * self._primary.energy.center.value ** 2. *
+                            flux_unit_conversion,
+                            xerr=self._primary.energy.bin_width.to(energy_unit).value / 2.,
+                            **kwargs_prim
+                            )
+            else:
+                ax.plot(self._primary.energy.center.to(energy_unit).value,
+                        self._primary.get_obs_spectrum().value * self._primary.energy.center.value ** 2. *
+                        flux_unit_conversion,
                         **kwargs_prim
                         )
 
         if plot_tot:
-            ax.errorbar(energy_tot.center.to(energy_unit).value,
+            if plot_errorbar:
+                ax.errorbar(energy_tot.center.to(energy_unit).value,
+                            spec_tot.data[:, 0, 0] * energy_tot.center.value ** 2. * flux_unit_conversion,
+                            xerr=energy_tot.bin_width.to(energy_unit).value / 2.,
+                            **kwargs_tot
+                            )
+            else:
+                ax.plot(energy_tot.center.to(energy_unit).value,
                         spec_tot.data[:, 0, 0] * energy_tot.center.value ** 2. * flux_unit_conversion,
-                        xerr=energy_tot.bin_width.to(energy_unit).value / 2.,
                         **kwargs_tot
                         )
 
