@@ -12,13 +12,11 @@ from gammapy.maps import Map, MapAxis
 from scipy.integrate import simps
 from scipy.ndimage import rotate
 from scipy.interpolate import UnivariateSpline, interp1d
-from gammapy.modeling.models.cube import SkyModelBase
-from gammapy.modeling.parameter import _get_parameters_str
-from gammapy.modeling import Parameter, Parameters
 from regions import CircleSkyRegion
 from astropy.coordinates import Angle
 from gammapy import __version__ as gpv
 from astropy.convolution import Tophat2DKernel, Gaussian2DKernel
+from collections import Iterable
 
 if float(gpv.split('.')[1]) > 16 or float(gpv.split('.')[0]) > 0:
     from gammapy.utils.array import scale_cube
@@ -196,35 +194,35 @@ class HistPrimary(object):
     Helper class for a histogram of true and observed energy
     for the primary gamma-ray emission of the EM cascade
     """
-    def __init__(self, hist_prim, edges_obs, edges_true):
+    def __init__(self, hist_prim, edges_obs_frame, edges_gal_frame):
         """
 
         :param hist_prim: array-like
             histogram of the primary gamma-ray spectrum per injected particle
-        :param edges_obs:
-            observed energy edges
-        :param edges_true:
-            true (injected) energy edges
+        :param edges_observer_frame:
+            energy edges in observer's frame
+        :param edges_galaxy_frame:
+            energy edges in Galactic frame, i.e., observed energies * (1. + z)
         """
         self._data_orig = hist_prim * u.dimensionless_unscaled
-        self._energy = MapAxis(edges_obs, interp='log', name='energy', node_type='edges')
-        self._energy_true = MapAxis(edges_true, interp='log', name='energy_true', node_type='edges')
+        self._energy_obs_frame = MapAxis(edges_obs_frame, interp='log', name='energy_obs_frame', node_type='edges')
+        self._energy_gal_frame = MapAxis(edges_gal_frame, interp='log', name='energy_gal_frame', node_type='edges')
         self._data = copy.deepcopy(self._data_orig)
 
     @property
     def data(self):
         return self._data
     @property
-    def energy(self):
-        return self._energy
+    def energy_obs_frame(self):
+        return self._energy_obs_frame
     @property
-    def energy_true(self):
-        return self._energy_true
+    def energy_gal_frame(self):
+        return self._energy_gal_frame
 
     def copy_data(self):
         return copy.deepcopy(self._data_orig)
 
-    def get_obs_spectrum(self, energy=None, **kwargs):
+    def get_obs_spectrum(self, energy_obs_frame=None, **kwargs):
         """
         Get the observed primary spectrum as a function of observed energy
         in units of weights / energy
@@ -246,16 +244,16 @@ class HistPrimary(object):
         dn_de = self._data.sum(axis=0)
 
         # divide by observed bin width
-        dn_de /= self._energy.bin_width
+        dn_de /= self._energy_obs_frame.bin_width
 
         # if energy array is given,
         # interpolate
-        if energy is not None:
+        if energy_obs_frame is not None:
             dn_de.value[dn_de.value == 0.] = np.full(np.sum(dn_de.value == 0.), 1e-40)
-            interp = UnivariateSpline(np.log(self._energy.center.value),
+            interp = UnivariateSpline(np.log(self._energy_obs_frame.center.value),
                                       np.log(dn_de.value),
                                       **kwargs)
-            dn_de_interp = np.exp(interp(np.log(energy.to(self._energy.unit).value)))
+            dn_de_interp = np.exp(interp(np.log(energy_obs_frame.to(self._energy_obs_frame.unit).value)))
             dn_de_interp *= dn_de.unit
         else:
             dn_de_interp = dn_de
@@ -317,41 +315,40 @@ class CascMap(object):
 
         if hist_prim is not None:
             self._primary = HistPrimary(hist_prim=hist_prim,
-                                        edges_true=edges_prim[0],
-                                        edges_obs=edges_prim[1]
+                                        edges_gal_frame=edges_prim[0],
+                                        edges_obs_frame=edges_prim[1]
                                         )
         else:
             self._primary = None
 
-
         # 2d array for integration of injected energy
         self._einj = []
-        for i, emin in enumerate(edges['energy_true'][:-1].value):
+        for i, emin in enumerate(edges['energy_injected'][:-1].value):
             self._einj.append(np.logspace(np.log10(emin),
-                                          np.log10(edges['energy_true'][i+1].value),
+                                          np.log10(edges['energy_injected'][i+1].value),
                                           steps))
 
-        self._einj = np.array(self._einj) * edges['energy_true'].unit
-        self._weights = np.ones_like(self._m.geom.get_axis_by_name('energy_true').center.value) * \
+        self._einj = np.array(self._einj) * edges['energy_injected'].unit
+        self._weights = np.ones_like(self._m.geom.axes['energy_injected'].center.value) * \
                         u.dimensionless_unscaled
 
         self._tmax = edges['t_delay'].max() * u.yr
-        self._casc = self._m.sum_over_axes(['t_delay'])
+        self._casc = self._m.sum_over_axes(['t_delay'], keepdims=False)
 
         self._casc_map = self._m.copy()
 
         # the observed cascade flux, after weights are applied, this will have units of
         # weights.units / eV / sr * eV
-        self._casc_obs = self._casc.sum_over_axes(['energy_true'])
+        self._casc_obs = self._casc.sum_over_axes(['energy_injected'], keepdims=False)
         self._casc_obs_bin_volume = self._casc_obs.geom.bin_volume()
 
         # spatial bin volume
         # which can be applied to casc_obs
-        self._spatial_bin_size = self._casc_obs.sum_over_axes(['energy']).geom.bin_volume()
+        self._spatial_bin_size = self._casc_obs.sum_over_axes(['energy_true'], keepdims=False).geom.bin_volume()
 
         # energy axes
-        self._energy = self._casc.geom.get_axis_by_name('energy')
-        self._energy_true = self._casc.geom.get_axis_by_name('energy_true')
+        self._energy_true = self._casc.geom.axes['energy_true']
+        self._energy_injected = self._casc.geom.axes['energy_injected']
 
         # rotation angle
         self._angle = 0. * u.deg
@@ -393,7 +390,7 @@ class CascMap(object):
         """
         logging.debug("Applying time weights ...")
         # get the time delay axis
-        t_axis = self._m.geom.get_axis_by_name('t_delay')
+        t_axis = self._m.geom.axes['t_delay']
 
         if look_back_times is None or weights is None:
             look_back_times = [0., self._tmax.to(t_axis.unit).value]
@@ -423,7 +420,7 @@ class CascMap(object):
         self._casc_map = self._m * \
                          weights_interp[:, np.newaxis, np.newaxis, np.newaxis, np.newaxis]
 
-        self._casc = self._casc_map.sum_over_axes(['t_delay'])
+        self._casc = self._casc_map.sum_over_axes(['t_delay'], keepdims=False)
         # self._casc now contains the time averaged flux
         # given some source history until now (t=0)
         logging.debug("... Done.")
@@ -436,14 +433,14 @@ class CascMap(object):
         :param tmax:
         :return:
         """
-        t = self._m.geom.get_axis_by_name('t_delay')
+        t = self._m.geom.axes['t_delay']
         mask = t.edges[1:] <= self._tmax.to(t.unit)
         idx = np.argmax(t.edges[1:][mask])
         # sum over axis
-        self._casc = self._m.slice_by_idx({'t_delay': slice(0, idx + 1)}).sum_over_axes(['t_delay'])
+        self._casc = self._m.slice_by_idx({'t_delay': slice(0, idx + 1)}).sum_over_axes(['t_delay'], keepdims=False)
 
         # update observed cascade flux
-        self._casc_obs = self._casc.sum_over_axes(['energy_true'])
+        self._casc_obs = self._casc.sum_over_axes(['energy_injected'], keepdims=False)
         self._casc_obs_bin_volume = self._casc_obs.geom.bin_volume()
 
     @property
@@ -471,6 +468,8 @@ class CascMap(object):
         self._tmax = tmax.to('yr')
         #self.sum_until_tmax()
         self.apply_time_weights()
+        self._weights = np.ones_like(self._m.geom.axes['energy_injected'].center.value) * \
+                        u.dimensionless_unscaled
 
     @property
     def angle(self):
@@ -494,12 +493,12 @@ class CascMap(object):
         return self._z
 
     @property
-    def energy(self):
-        return self._energy
-
-    @property
     def energy_true(self):
         return self._energy_true
+
+    @property
+    def energy_injected(self):
+        return self._energy_injected
 
     @property
     def config(self):
@@ -615,6 +614,7 @@ class CascMap(object):
             tmin.append(min_resol.value)
             tmax_data.append(data['dt'][()].max())
             tmin_data.append(data['dt'][()].min())
+
             logging.info("time resolution of the simulation was"
                          "{0:.3f} = {1:.3f}".format(min_resol, min_resol.to('day')))
             if tmin_data[-1] < -1. * tmin[-1]:
@@ -624,30 +624,30 @@ class CascMap(object):
             # injected energy bins
             # are determined already here
             if isinstance(config['Source']['Emin'], float):
-                energy_true = np.logspace(np.log10(config['Source']['Emin']),
+                energy_injected = np.logspace(np.log10(config['Source']['Emin']),
                                           np.log10(config['Source']['Emax']),
                                           config['Source']['Esteps'])
             else:
-                energy_true = np.append(config['Source']['Emin'],
+                energy_injected = np.append(config['Source']['Emin'],
                                         config['Source']['Emax'][-1])
             if not i:
-                edges['energy_true'] = energy_true
+                edges['energy_injected'] = energy_injected
                 n_injected_particles = data['intspec/weights'][()]
             else:
                 # check if true energy edges overlap, not allowed
                 # otherwise append / prepend
-                if energy_true[0] == edges['energy_true'][-1]:
-                    edges['energy_true'] = np.append(edges['energy_true'], energy_true[1:])
+                if energy_injected[0] == edges['energy_injected'][-1]:
+                    edges['energy_injected'] = np.append(edges['energy_injected'], energy_injected[1:])
                     n_injected_particles = np.append(n_injected_particles, data['intspec/weights'][()])
-                elif energy_true[-1] == edges['energy_true'][0]:
-                    edges['energy_true'] = np.append(energy_true[:-1], edges['energy_true'])
+                elif energy_injected[-1] == edges['energy_injected'][0]:
+                    edges['energy_injected'] = np.append(energy_injected[:-1], edges['energy_injected'])
                     n_injected_particles = np.append(data['intspec/weights'][()], n_injected_particles)
                 else:
                     raise ValueError("True energy axis of different files must connect to each other!")
 
             if not i:
-                values['energy_true'] = data['E0'][()]
-                values['energy'] = data['E'][()]
+                values['energy_injected'] = data['E0'][()]
+                values['energy_true'] = data['E'][()]
                 values['t_delay'] = data['dt'][()]
                 values['lon'] = data['Protsph'][1, :]
                 values['lat'] = data['Protsph'][2, :]
@@ -656,8 +656,8 @@ class CascMap(object):
                 values['weights'] = data['W'][()]
 
             else:
-                values['energy_true'] = np.append(values['energy_true'], data['E0'][()])
-                values['energy'] = np.append(values['energy'], data['E'][()])
+                values['energy_injected'] = np.append(values['energy_injected'], data['E0'][()])
+                values['energy_true'] = np.append(values['energy_true'], data['E'][()])
                 values['t_delay'] = np.append(values['t_delay'], data['dt'][()])
                 values['lon'] = np.append(values['lon'], data['Protsph'][1, :])
                 values['lat'] = np.append(values['lat'], data['Protsph'][2, :])
@@ -667,7 +667,7 @@ class CascMap(object):
 
             hfile.close()
 
-        edges['energy_true'] *= u.eV
+        edges['energy_injected'] *= u.eV
         if not np.all(np.array(tmin) == tmin[0]):
             logging.warning("Not all time resolutions are equal, selecting maximum")
         # time resolution
@@ -689,31 +689,38 @@ class CascMap(object):
                                          np.logspace(np.log10(np.max([edges['t_delay'].max(), 10.])), 8., 8)
                                          )
 
+        elif isinstance(lightcurve, Iterable):
+            edges['t_delay'] = np.array(lightcurve)
+
         else:
             first_bin = np.max([tmin, 1.])
-            edges['t_delay'] = np.append(
-                np.insert(np.logspace(np.log10(first_bin), 7, 8),
-                          0,
-                          insert_tmin),
-                np.max(tmax_data)
-            )
+            edges['t_delay'] =np.insert(np.logspace(np.log10(first_bin), 7, 8),
+                                        0,
+                                        insert_tmin)
+
+            if tmax_data > edges['t_delay'].max():
+                edges['t_delay'] = np.append(edges['t_delay'], np.max(tmax_data))
+
         edges['t_delay'] *= u.yr
         logging.info("Time bins: {0}".format(edges['t_delay']))
         # observed energy bins
         if isinstance(ebins, int):
-            edges['energy'] = np.logspace(np.log10(values['energy'].min()),
-                                          np.log10(values['energy'].max()),
+            edges['energy_true'] = np.logspace(np.log10(values['energy_true'].min()),
+                                          np.log10(values['energy_true'].max()),
                                           ebins) * u.eV
 
         elif isinstance(ebins, list) or isinstance(ebins, tuple):
-            edges['energy'] = np.array(ebins)
+            edges['energy_true'] = np.array(ebins)
 
         elif isinstance(ebins, np.ndarray):
-            edges['energy'] = ebins
+            edges['energy_true'] = ebins
 
         # phi
         binsz *= u.deg / u.pixel
-        width *= u.deg
+        if isinstance(width, u.Quantity):
+            width = width.to("deg")
+        else:
+            width *= u.deg
         nbins = np.ceil(2. * width / 2. / binsz).astype(np.int)
         edges['lon'] = np.linspace(-width.value / 2.,
                                    width.value / 2.,
@@ -725,8 +732,8 @@ class CascMap(object):
         # create a numpy histogram for the cascade
         # and potentially for the source
         # first make sure ordering is correct
-        # needs to be in order t_delay, energy_true, energy, lon, lat
-        keys = ['t_delay', 'energy_true', 'energy', 'lon', 'lat']
+        # needs to be in order t_delay, energy_injected, energy, lon, lat
+        keys = ['t_delay', 'energy_injected', 'energy_true', 'lon', 'lat']
         edges = OrderedDict((k, edges[k]) for k in keys)
         return binsz, config, edges, n_injected_particles, values, width
 
@@ -748,8 +755,15 @@ class CascMap(object):
         :return:
         """
         # cascade condition
-        mc = (values['id_obs'] == id_detection) & \
-             (values['id_parent'] != id_injected)
+        if isinstance(id_detection, Iterable):
+            mc = np.zeros(values['id_obs'].size, dtype=np.bool)
+            for idd in id_detection:
+                mc |= (values['id_obs'] == idd)
+            mc &= values['id_parent'] != id_injected
+
+        else:
+            mc = (values['id_obs'] == id_detection) & \
+                 (values['id_parent'] != id_injected)
         # build data cube for cascade
         if np.sum(mc):
             data_casc = np.array([values[k][mc] for k in edges.keys()])
@@ -770,31 +784,34 @@ class CascMap(object):
             logging.info("Building the primary histogram ...")
             mi = (values['id_obs'] == id_detection) & (values['id_parent'] == id_injected)
             if np.sum(mi):
-                keys = ['energy_true', 'energy']
+                keys = ['energy_injected', 'energy_true']
                 data_primary = np.array([values[k][mi] for k in keys])
                 if isinstance(config, dict):
                     # TODO: accounted for redshift, but is it correct?
                     # edges['e_true'] contain the injected energies
                     # edges['e_true'] / ( 1 + z) are the observed energies
                     hist_prim, edges_prim = np.histogramdd(data_primary.T,
-                                                           bins=(edges['energy_true'].value,
-                                                                 edges['energy_true'].value / (1. + config['Source']['z'])),
+                                                           bins=(edges['energy_injected'].value,
+                                                                 edges['energy_injected'].value /
+                                                                 (1. + config['Source']['z'])),
                                                            weights=values['weights'][mi]
                                                            )
                 else:
                     hist_prim, edges_prim = np.histogramdd(data_primary.T,
-                                                           bins=(edges['energy_true'], edges['energy']),
+                                                           bins=(edges['energy_injected'], edges['energy']),
                                                            weights=values['weights'][mi]
                                                            )
-                edges_prim = [e * edges['energy_true'].unit for e in edges_prim]
+                edges_prim = [e * edges['energy_injected'].unit for e in edges_prim]
             else:
                 logging.warning("no events pass primary spectrum criterion")
         return hist_casc, hist_prim, edges_prim
 
     def reset_casc(self):
-        self._tmax = self._m.geom.get_axis_by_name('t_delay').edges.max()
-        self._casc = self._m.sum_over_axes(['t_delay'])
-        self._casc_obs = self._casc.sum_over_axes(['energy_true'])
+        self._tmax = self._m.geom.axes['t_delay'].edges.max()
+        self._casc = self._m.sum_over_axes(['t_delay'], keepdims=False)
+        self._casc_obs = self._casc.sum_over_axes(['energy_injected'], keepdims=False)
+        self._weights = np.ones_like(self._m.geom.axes['energy_injected'].center.value) * \
+                        u.dimensionless_unscaled
 
     def lumi_iso(self, injspec, doppler=1., cosmo=Planck15):
         """
@@ -809,7 +826,7 @@ class CascMap(object):
             assumed cosmology
         :return:
         """
-        cen = self._casc.geom.get_axis_by_name('energy_true').center
+        cen = self._casc.geom.axes['energy_injected'].center
         f = injspec(cen)
         lumi_iso = simps(f.value * cen.value, cen.value) * f.unit * cen.unit**2.
         if self._z is not None:
@@ -819,22 +836,26 @@ class CascMap(object):
         lumi_iso *= doppler ** -4.
         return lumi_iso.to('erg s-1')
 
-    def _compute_spectral_weights(self, injspec):
+    def _compute_spectral_weights(self, injspec, **kwargs):
         """
         Set weights to compute cascade for an arbitrary spectrum.
         Spectrum should take energies in eV and return flux units in terms of eV.
 
         :param injspec: function pointer
             function that takes energy as Quantity and returns flux per energy
+
+        :param kwargs: dict
+            additional parameters passed to injspec
+
         :return:
         """
 
         # flux of new injected spectrum integrated in
         # bins of injected spectrum
         # as update for weights
-        f = injspec(self._einj)
+        f = injspec(self._einj, **kwargs)
 
-        target_unit = self._energy_true.unit.to_string()
+        target_unit = self._energy_injected.unit.to_string()
 
         # make sure that the right energy unit is used
         funit_split = f.unit.to_string().split('/')
@@ -862,7 +883,7 @@ class CascMap(object):
         weights *= target_weight_unit * self._einj.unit
         return weights
 
-    def apply_spectral_weights(self, injspec, smooth=False, force_recompute=False):
+    def apply_spectral_weights(self, injspec, smooth=False, force_recompute=False, **kwargs):
         """
         Apply weights to compute cascade for an arbitrary spectrum
 
@@ -871,9 +892,12 @@ class CascMap(object):
 
         :param smooth: bool
             if True, apply adaptive smoothing to the cascade in each energy bin
+
+        :param kwargs: dict
+            additional parameters passed to injspec
         :return:
         """
-        weights = self._compute_spectral_weights(injspec)
+        weights = self._compute_spectral_weights(injspec, **kwargs)
         # weights did not change, return
         if not self._weights.unit == u.dimensionless_unscaled and not force_recompute \
                 and np.all(np.equal(weights, self._weights)):
@@ -888,7 +912,8 @@ class CascMap(object):
             # one unit of eV from integration, and the other from the bin volume
             # thus, casc_obs is a differential quantity
             self._casc_obs = \
-                (self._casc * self._weights[:, np.newaxis, np.newaxis, np.newaxis]).sum_over_axes(['energy_true'])
+                (self._casc * self._weights[:, np.newaxis, np.newaxis, np.newaxis]).sum_over_axes(['energy_injected'],
+                                                                                                  keepdims=False)
             self._casc_obs /= self._casc_obs_bin_volume
 
         if smooth:
@@ -961,7 +986,7 @@ class CascMap(object):
         if self._primary is not None:
             # get the observed flux of the primary spectrum
             dn_de_primary = self._primary.get_obs_spectrum(
-                energy=self._casc_obs.geom.get_axis_by_name('energy').center
+                energy_obs_frame=self._casc_obs.geom.axes['energy_true'].center
             )
 
             # get the central pixel locations
@@ -1020,7 +1045,7 @@ class CascMap(object):
         map_export.quantity = map_export.quantity.to(target_flux_unit)
 
         # change the unit of the energy axis
-        idx = map_export.geom.get_axis_index_by_name("energy")
+        idx = map_export.geom.axes["energy_true"]
         map_export.geom.axes[idx].edges = map_export.geom.axes[idx].edges.to(target_energy_unit)
         map_export.geom.axes[idx].center = map_export.geom.axes[idx].center.to(target_energy_unit)
         # ugly work around
@@ -1091,8 +1116,8 @@ class CascMap(object):
             add_primary=True
             )
 
-        energy_halo = spec_halo.geom.get_axis_by_name('energy')
-        energy_tot = spec_tot.geom.get_axis_by_name('energy')
+        energy_halo = spec_halo.geom.axes['energy_true']
+        energy_tot = spec_tot.geom.axes['energy_true']
 
         flux_unit_conversion = (spec_halo.quantity.unit * energy_halo.unit ** 2.).to(E2dNdE_unit)
 
@@ -1110,22 +1135,22 @@ class CascMap(object):
                         **kwargs_casc
                         )
 
-        if plot_prim:
+        if plot_prim and self._primary is not None:
             if plot_errorbar:
-                ax.errorbar(self._primary.energy.center.to(energy_unit).value,
-                            self._primary.get_obs_spectrum().value * self._primary.energy.center.value ** 2. *
+                ax.errorbar(self._primary.energy_obs_frame.center.to(energy_unit).value,
+                            self._primary.get_obs_spectrum().value * self._primary.energy_obs_frame.center.value ** 2. *
                             flux_unit_conversion,
-                            xerr=self._primary.energy.bin_width.to(energy_unit).value / 2.,
+                            xerr=self._primary.energy_obs_frame.bin_width.to(energy_unit).value / 2.,
                             **kwargs_prim
                             )
             else:
-                ax.plot(self._primary.energy.center.to(energy_unit).value,
-                        self._primary.get_obs_spectrum().value * self._primary.energy.center.value ** 2. *
+                ax.plot(self._primary.energy_gal_frame.center.to(energy_unit).value,
+                        self._primary.get_obs_spectrum().value * self._primary.energy_gal_frame.center.value ** 2. *
                         flux_unit_conversion,
                         **kwargs_prim
                         )
 
-        if plot_tot:
+        if plot_tot and self._primary is not None:
             if plot_errorbar:
                 ax.errorbar(energy_tot.center.to(energy_unit).value,
                             spec_tot.data[:, 0, 0] * energy_tot.center.value ** 2. * flux_unit_conversion,
@@ -1145,160 +1170,6 @@ class CascMap(object):
         ax.set_ylabel("$E^2 dN/dE$ ({0:s})".format(E2dNdE_unit))
 
         return fig, ax
-
-
-class SkyDiffuseCascadeCube(SkyModelBase):
-    """Cube sky map model for electromagnetic cascades.
-
-    Parameters
-    ----------
-    cascmap : `~simCRpropa.cascmaps.CascMap`
-        Cascade Map template
-    spectral_model : `SpectralModel`
-        Spectral model of the injected particles.
-    rotation: float
-        Rotation angle of the cascade template
-    tmax: float
-        Maximum delay time in years allowed for the cascade.
-
-    interp_kwargs : dict
-        Interpolation keyword arguments passed to `gammapy.maps.Map.interp_by_coord`.
-        Default arguments are {'interp': 'linear', 'fill_value': 0}.
-    """
-
-    tag = "SkyDiffuseCascadeCube"
-    rotation = Parameter("rotation", 0., unit="deg", frozen=True)
-    tmax = Parameter("tmax", 1e7, unit="yr", frozen=True)
-
-    _apply_irf_default = {"exposure": True, "psf": True, "edisp": True}
-
-    def __init__(
-        self,
-        cascmap,
-        spectral_model,
-        rotation=rotation.quantity,
-        tmax=tmax.quantity,
-        interp_kwargs=None,
-        apply_irf=None,
-        name=None
-    ):
-
-        self.cascmap = cascmap
-        self.spectral_model = spectral_model
-        self._name = name
-
-        interp_kwargs = {} if interp_kwargs is None else interp_kwargs
-        interp_kwargs.setdefault("interp", "linear")
-        interp_kwargs.setdefault("fill_value", 0)
-        self._interp_kwargs = interp_kwargs
-
-        self._cached_value = None
-        self._cached_weights = None
-        self._cached_coordinates = (None, None, None)
-
-        if apply_irf is None:
-            apply_irf = self._apply_irf_default.copy()
-
-        self.apply_irf = apply_irf
-        super().__init__(tmax=tmax, rotation=rotation)
-
-    @property
-    def name(self):
-        return self._name
-
-    def _interpolate(self, lon, lat, energy):
-        coord = {
-            "lon": lon.to_value("deg"),
-            "lat": lat.to_value("deg"),
-            "energy": energy,
-        }
-        return self.cascmap.add_primary_to_casc().interp_by_coord(coord, **self._interp_kwargs)
-
-    def evaluate(self, lon, lat, energy, **kwargs):
-        """Evaluate model at given coordinates"""
-
-        rotation = kwargs.pop("rotation")
-        tmax = kwargs.pop("tmax")
-
-        # change max delay time
-        if not tmax == self.cascmap.tmax:
-            self.cascmap.tmax = tmax
-
-        # change rotation angle
-        # and apply rotation
-        if not rotation == self.cascmap.angle:
-            self.cascmap.angle = rotation
-
-        # change spectral weights
-        self.cascmap.apply_spectral_weights(injspec=lambda energy: \
-                                            self.spectral_model.evaluate(
-                                                energy=energy, **kwargs)
-                                            )
-
-        is_cached_coord = [
-            _ is coord for _, coord in zip((lon, lat, energy), self._cached_coordinates)
-        ]
-
-        # reset cache
-        if not np.all(is_cached_coord):
-            self._cached_value = None
-
-        if self._cached_weights is not None and \
-                not np.all(np.equal(self.cascmap.weights, self._cached_weights)):
-            self._cached_weights = None
-
-        if self._cached_value is None or self._cached_weights is None:
-            self._cached_coordinates = (lon, lat, energy)
-            self._cached_value = self._interpolate(lon, lat, energy)
-            self._cached_weights = self.cascmap.weights
-
-        return u.Quantity(self._cached_value, self.cascmap.casc_obs.unit, copy=False)
-
-    def copy(self):
-        """A shallow copy"""
-        new = copy.copy(self)
-        return new
-
-    @property
-    def position(self):
-        """`~astropy.coordinates.SkyCoord`"""
-        return self.cascmap.casc_obs.geom.center_skydir
-
-    @property
-    def evaluation_radius(self):
-        """`~astropy.coordinates.Angle`"""
-        return np.max(self.cascmap.casc_obs.geom.width) / 2.0
-
-    @property
-    def parameters(self):
-        return (
-            Parameters([self.rotation, self.tmax])
-            + self.spectral_model.parameters
-        )
-
-    def to_dict(self):
-        data = super().to_dict()
-        data["name"] = self.name
-        data["type"] = data.pop("type")
-        data["spectral_model"] = self.spectral_model.to_dict()
-        data["parameters"] = Parameters([self.rotation, self.tmax]).to_dict()
-
-        if self.apply_irf != self._apply_irf_default:
-            data["apply_irf"] = self.apply_irf
-
-        return data
-
-    def __str__(self):
-        str_ = self.__class__.__name__ + "\n\n"
-        str_ += "\tParameters:\n"
-        info = _get_parameters_str(self.parameters)
-        lines = info.split("\n")
-        str_ += "\t" + "\n\t".join(lines[:-1])
-
-        str_ += "\n\n"
-        return str_.expandtabs(tabsize=2)
-
-    # TODO covariance handling
 
 
 class ASmooth(object):
@@ -1406,7 +1277,7 @@ class ASmooth(object):
             mean = 1e-50
         return counts / mean
 
-    def smooth(self, axis_name='energy'):
+    def smooth(self, axis_name='energy_true'):
         """
         Run adaptive smoothing on input Map.
 
@@ -1437,7 +1308,7 @@ class ASmooth(object):
         cubes = {}
 
         # loop over energy bins
-        for i in range(self._input_map.geom.get_axis_by_name(axis_name).center.size):
+        for i in range(self._input_map.geom.axes[axis_name].center.size):
             # for each of the chosen scales,
             # this does the convolution
             cubes["map"] = scale_cube(self._input_map.slice_by_idx({axis_name: i}).data, kernels)
@@ -1494,7 +1365,7 @@ class ASmooth(object):
 
         return smoothed
 
-    def diagnostic_plots(self, fig=None, fig2=None, cmap='cubehelix_r', slice="sum", axis='energy', cutout=None,
+    def diagnostic_plots(self, fig=None, fig2=None, cmap='cubehelix_r', slice="sum", axis='energy_true', cutout=None,
                          width=0.1 * u.deg):
         import matplotlib.pyplot as plt
         from matplotlib.patches import Rectangle
@@ -1526,8 +1397,8 @@ class ASmooth(object):
                 ax=ax11, add_cbar=True, stretch='log', cmap=cmap)
 
         elif isinstance(slice, str) and slice == 'sum':
-            input_map = self._input_map.sum_over_axes([axis])
-            smooth = self._result["map"].sum_over_axes([axis])
+            input_map = self._input_map.sum_over_axes([axis], keepdims=False)
+            smooth = self._result["map"].sum_over_axes([axis], keepdims=False)
 
             ax00 = fig.add_subplot(221, projection=input_map.cutout(c, width=cutout).geom.wcs)
             ax01 = fig.add_subplot(222, projection=smooth.cutout(c, width=cutout).geom.wcs)
@@ -1576,4 +1447,5 @@ class ASmooth(object):
                       color=plt.cm.Reds(0.7), ls='--')
 
         return fig, fig2
+
 
