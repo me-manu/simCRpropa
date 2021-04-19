@@ -68,6 +68,7 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--conf', required=True)
     parser.add_argument('--select-source')
     parser.add_argument('--select-bfield', type=float)
+    parser.add_argument('--plots', action="store_true", help="Create plots")
 
     args = parser.parse_args()
 
@@ -84,6 +85,11 @@ if __name__ == '__main__':
 
     # suppress runtime warnings
     np.seterr(divide='ignore', invalid='ignore')
+
+    # initialize result arrays
+    stat_results = {src: np.zeros(len(b_fields)) for src in config.keys() if not src == 'global'}
+    stat_results = {src + '_fermi_only': np.zeros(len(b_fields)) for src in config.keys() if not src == 'global'}
+    stat_results['tot'] = np.zeros(len(b_fields))
 
     # loop through the sources:
     for src in config.keys():
@@ -151,19 +157,27 @@ if __name__ == '__main__':
         ps_model.parameters.to_table()
         ps_model.spectral_model.model1.parameters.to_table()
 
+        # save fit point source fit result
+        stat_results[src + "_ps"] = fit_result_ps.total_stat
+
         # compute flux points
         e_min, e_max = dataset_stack.energy_range[0].value, 15.
         energy_edges = np.logspace(np.log10(e_min), np.log10(e_max), 10) * u.TeV
 
         fpe = FluxPointsEstimator(energy_edges=energy_edges, source=ps_model.name)
         flux_points = fpe.run(datasets=[dataset_stack])
-        flux_points.table_formatted
         flux_points.table["is_ul"] = flux_points.table["ts"] < 4
 
         # plot the model and flux points
-        #flux_points.plot(energy_power=2.)
-        #ps_model.spectral_model.plot(energy_range=[e_min, e_max] * u.TeV, energy_power=2)
-        #ps_model.spectral_model.plot_error(energy_range=[e_min, e_max] * u.TeV, energy_power=2.)
+        if args.plots:
+            fig = plt.figure(dpi=150)
+            ax = fig.add_subplot(111)
+            flux_points.plot(ax=ax, energy_power=2.)
+            ps_model.spectral_model.plot(ax=ax, energy_range=[e_min, e_max] * u.TeV, energy_power=2)
+            ps_model.spectral_model.plot_error(ax=ax, energy_range=[e_min, e_max] * u.TeV, energy_power=2.)
+            ax.grid()
+            fig.savefig(f"plots/{src:s}_ebl_epl.png")
+            plt.close("all")
 
         # loop over magnetic fields
         for ib, B in enumerate(b_fields):
@@ -201,14 +215,22 @@ if __name__ == '__main__':
             casc_spec.parameters.to_table()
 
             # Plot the total model
-            #e_range = [1e-3, 10.] * u.TeV
-            #casc_spec.add_primary = True
-            #casc_spec.plot(energy_range=e_range, energy_power=2)
-            #ps_model.spectral_model.plot(energy_range=e_range, energy_power=2)
-            #casc_spec.add_primary = False
-            #casc_spec.plot(energy_range=e_range, energy_power=2)
-            #casc_spec.add_primary = True
-            #plt.ylim(1e-15, 3e-12)
+            if args.plots:
+                fig = plt.figure(dpi=150)
+                ax = fig.add_subplot(111)
+
+                e_range = [1e-3, 10.] * u.TeV
+                casc_spec.add_primary = True
+                casc_spec.plot(ax=ax, energy_range=e_range, energy_power=2)
+                ps_model.spectral_model.plot(ax=ax, energy_range=e_range, energy_power=2)
+                casc_spec.add_primary = False
+                casc_spec.plot(ax=ax, energy_range=e_range, energy_power=2)
+                casc_spec.add_primary = True
+                plt.ylim(1e-15, 3e-12)
+
+                ax.grid()
+                fig.savefig(f"plots/{src:s}_B{B}_casc+ps_models.png")
+                plt.close("all")
 
             # Perform the fit with the cascade
             casc_model = SkyModel(spectral_model=casc_spec, name='casc')
@@ -242,27 +264,31 @@ if __name__ == '__main__':
                           )
 
             # plot the interpolation
-            #plt.figure(dpi=150)
-            ## plot a likelihood surface
-            ## choose a slice in cut off energy
-            #cut_id = 1
-            ## build a grid of indices and norms
-            #ii, nn = np.meshgrid(llh._params["Index"], llh.log_norm_array, indexing='ij')
-            ## plot the log likehood grid
-            #dlogl = 2. * (llh._llh_grid[cut_id] - llh._llh_grid[cut_id].max())
-            #im = plt.pcolormesh(ii, nn, dlogl, cmap=cmap_name, vmin=-10, vmax=0)
-            #plt.annotate("$E_\mathrm{{cut}} = {0:.0f}$TeV".format(llh.params["Cutoff"][cut_id]),
-                         #xy=(0.05,0.95), xycoords='axes fraction', color='w', va='top',
-                         #fontsize='x-large'
-                         #)
-            #plt.colorbar(im, label='$\ln\mathcal{L}$')
-            #plt.gca().tick_params(direction='out')
-            #plt.xlabel("$\Gamma$")
-            #plt.ylabel("$\log_{10}(N)$")
-            #plt.grid(color='0.7', ls=':')
-            #plt.subplots_adjust(bottom=0.2, left=0.2)
-            ##plt.savefig("lnl_fermi_grid_Ecut{0:.0f}TeV.png".format(llh.params["Cutoff"][cut_id]), dpi=150)
-            #
+            if args.plots:
+                fig = plt.figure(dpi=150)
+                ax = fig.add_subplot(111)
+
+                # plot a likelihood surface
+                # choose a slice in cut off energy
+                cut_id = 1
+                # build a grid of indices and norms
+                ii, nn = np.meshgrid(llh._params["Index"], llh.log_norm_array, indexing='ij')
+                # plot the log likehood grid
+                dlogl = 2. * (llh._llh_grid[cut_id] - llh._llh_grid[cut_id].max())
+                im = ax.pcolormesh(ii, nn, dlogl, cmap=cmap_name, vmin=-10, vmax=0)
+                ax.annotate("$E_\mathrm{{cut}} = {0:.0f}$TeV".format(llh.params["Cutoff"][cut_id]),
+                             xy=(0.05,0.95), xycoords='axes fraction', color='w', va='top',
+                             fontsize='x-large'
+                             )
+                ax.colorbar(im, label='$\ln\mathcal{L}$')
+                ax.tick_params(direction='out')
+                plt.xlabel("$\Gamma$")
+                plt.ylabel("$\log_{10}(N)$")
+                plt.grid(color='0.7', ls=':')
+                plt.subplots_adjust(bottom=0.2, left=0.2)
+                fig.savefig("plots/{1:s}_lnl_fermi_grid_Ecut{0:.0f}TeV_B{2}.png".format(
+                    llh.params["Cutoff"][cut_id], src, B))
+                plt.close("all")
 
             # initialize prior data set
             ds = dataset_stack.copy()
@@ -286,42 +312,54 @@ if __name__ == '__main__':
             casc_model.parameters.to_table()
 
             # plot the flux points
-            #ax = flux_points.plot(energy_power=2., label='data', marker='o')
+            if args.plots:
+                fig = plt.figure(dpi=150)
+                ax = flux_points.plot(energy_power=2., label='data', marker='o', fig=fig)
 
-            # plot the final model
-            #e_range = [1e-3, 10.] * u.TeV
-            # total model
-            #casc_model.spectral_model.add_primary = True
-            #casc_model.spectral_model.plot(energy_range=e_range, energy_power=2, label='Total', color='k')
-            #casc_model.spectral_model.plot_error(energy_range=e_range, energy_power=2)
-            # point source
-            #obs_model = casc_model.spectral_model.intrinsic_spectral_model * casc_model.spectral_model.ebl
-            #obs_model.plot(energy_range=e_range, energy_power=2, label='Point source', color='k', ls='--')
+                # plot the final model
+                e_range = [1e-3, 10.] * u.TeV
+                # total model
+                casc_model.spectral_model.add_primary = True
+                casc_model.spectral_model.plot(ax=ax, energy_range=e_range, energy_power=2, label='Total', color='k')
+                casc_model.spectral_model.plot_error(ax=ax, energy_range=e_range, energy_power=2)
+                # point source
+                obs_model = casc_model.spectral_model.intrinsic_spectral_model * casc_model.spectral_model.ebl
+                obs_model.plot(ax=ax, energy_range=e_range, energy_power=2, label='Point source', color='k', ls='--')
 
-            # cascade
-            #casc_model.spectral_model.add_primary = False
-            #casc_model.spectral_model.plot(energy_range=e_range, energy_power=2, label='Cascade', color='k', ls='-.')
-            #casc_model.spectral_model.add_primary = True
+                # cascade
+                casc_model.spectral_model.add_primary = False
+                casc_model.spectral_model.plot(ax=ax,
+                                               energy_range=e_range,
+                                               energy_power=2,
+                                               label='Cascade',
+                                               color='k',
+                                               ls='-.')
+                casc_model.spectral_model.add_primary = True
 
-            # fermi SED
-            SEDPlotter.plot_sed(sed, ax=ax, ms=6.,
-                                marker='o',
-                                color='0.7',
-                                mec='0.7',
-                                alpha=1.,
-                                noline=False,
-                                band_alpha=0.5,
-                                line_alpha=1.,
-                                band_linestyle='-',
-                                label="Fermi",
-                                flux_unit='TeV cm-2 s-1',
-                                energy_unit='TeV',
-                                print_name=False
-                                )
+                # fermi SED
+                SEDPlotter.plot_sed(sed, ax=ax, ms=6.,
+                                    marker='o',
+                                    color='0.7',
+                                    mec='0.7',
+                                    alpha=1.,
+                                    noline=False,
+                                    band_alpha=0.5,
+                                    line_alpha=1.,
+                                    band_linestyle='-',
+                                    label="Fermi",
+                                    flux_unit='TeV cm-2 s-1',
+                                    energy_unit='TeV',
+                                    print_name=False
+                                    )
 
-            plt.legend(loc='lower center')
-            plt.ylim(3e-15, 2e-10)
-            plt.xlim(1e-3, 2e1)
+                ax.legend(loc='lower center')
+                plt.ylim(3e-15, 2e-10)
+                plt.xlim(1e-3, 2e1)
+                fig.savefig(f"plots/final_fits_{src:s}_b{B}.png")
+
+            # save total stat results
+            stat_results[src][ib] = fit_result_casc.total_stat
+            stat_results[src + "_fermi_only"][ib] = fit_result_casc.total_stat
 
 # ### TO DO
 #  - Save results
