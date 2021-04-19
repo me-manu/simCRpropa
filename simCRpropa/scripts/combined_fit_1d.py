@@ -359,13 +359,13 @@ if __name__ == '__main__':
 
                 # fermi SED
                 SEDPlotter.plot_sed(sed, ax=ax, ms=6.,
-                                    marker='o',
-                                    color='0.7',
-                                    mec='0.7',
+                                    marker='.',
+                                    color='C1',
+                                    mec='C1',
                                     alpha=1.,
                                     noline=False,
-                                    band_alpha=0.5,
-                                    line_alpha=1.,
+                                    band_alpha=0.2,
+                                    line_alpha=0.5,
                                     band_linestyle='-',
                                     label="Fermi",
                                     flux_unit='TeV cm-2 s-1',
@@ -380,12 +380,13 @@ if __name__ == '__main__':
 
             # save total stat results
             stat_results[src][ib] = fit_result_casc.total_stat
-            stat_results[src + "_fermi_only"][ib] = fit_result_casc.total_stat
+            stat_results['tot'][ib] += fit_result_casc.total_stat
+            stat_results[src + "_fermi_only"][ib] = prior_stack.llh_fermi
+
+   np.save(stat_results, config['outifle'])
 
 # TODO
-#  - Save results
 #  - make sure that bias implementation is correct
-#  - make control plots: likelihood surface, PS fit, combined fit with halo
 
 
 
