@@ -3,6 +3,9 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
+import glob
+import argparse
+import os
 from gammapy.datasets import Datasets
 from gammapy.modeling.models import (
     ExpCutoffPowerLawSpectralModel, 
@@ -23,7 +26,6 @@ from astropy.coordinates import Angle
 from simCRpropa.fermiinterp import LogLikeCubeFermi
 from myplot.spectrum import SEDPlotter
 from matplotlib.colors import LinearSegmentedColormap
-import argparse
 
 
 def convert(data):
@@ -34,19 +36,18 @@ def convert(data):
 
 
 # set logging level
-level = "INFO"
-logging.basicConfig(level=level,
-                    stream=sys.stderr,
-                    format='\033[0;36m%(filename)10s:\033[0;35m%(lineno)4s\033[0;0m --- %(levelname)7s: %(message)s')
-logging.addLevelName(logging.DEBUG, 
-                     "\033[1;32m%s\033[1;0m" % logging.getLevelName(logging.DEBUG))
-logging.addLevelName(logging.INFO, 
-                     "\033[1;36m%s\033[1;0m" % logging.getLevelName(logging.INFO))
-logging.addLevelName(logging.WARNING, 
-                     "\033[1;31m%s\033[1;0m" % logging.getLevelName(logging.WARNING))
-logging.addLevelName(logging.ERROR, 
-                     "\033[1;41m%s\033[1;0m" % logging.getLevelName(logging.ERROR))
-
+def init_logging(level="INFO"):
+    logging.basicConfig(level=level,
+                        stream=sys.stderr,
+                        format='\033[0;36m%(filename)10s:\033[0;35m%(lineno)4s\033[0;0m --- %(levelname)7s: %(message)s')
+    logging.addLevelName(logging.DEBUG, 
+                         "\033[1;32m%s\033[1;0m" % logging.getLevelName(logging.DEBUG))
+    logging.addLevelName(logging.INFO, 
+                         "\033[1;36m%s\033[1;0m" % logging.getLevelName(logging.INFO))
+    logging.addLevelName(logging.WARNING, 
+                         "\033[1;31m%s\033[1;0m" % logging.getLevelName(logging.WARNING))
+    logging.addLevelName(logging.ERROR, 
+                         "\033[1;41m%s\033[1;0m" % logging.getLevelName(logging.ERROR))
 
 # Create my own colormap
 colors = [
@@ -71,6 +72,7 @@ if __name__ == '__main__':
     parser.add_argument('--plots', action="store_true", help="Create plots")
 
     args = parser.parse_args()
+    init_logging()
 
     with open(args.conf) as f:
         config = yaml.safe_load(f)
@@ -78,7 +80,6 @@ if __name__ == '__main__':
     # the region in which
     # we'll calculate the cascade contribution
     on_radius = Angle("{0:f} deg".format(config['global']['on_radius']))
-    on_region = CircleSkyRegion(center=geom.center_skydir, radius=on_radius)
 
     # the magnetic fields
     b_fields = config['global']['b_fields']
@@ -96,27 +97,38 @@ if __name__ == '__main__':
         if src == 'global':
             continue
 
-        if not args.select_source is not None:
+        if args.select_source is not None:
             if not src == args.select_source:
                 continue
 
         logging.info(f" ====== {src} ======= ")
 
+        logging.info("Loading IACT datasets...")
         # read 3d data set
-        dataset_3d = Datasets.read(config[src]['dataset_3d'])
+        dataset_3d = Datasets.read(config['global']['iact_dataset_3d'].replace("*", src))
         geom = dataset_3d[0].geoms['geom']
+        on_region = CircleSkyRegion(center=geom.center_skydir, radius=on_radius)
 
         # Load the 1D data set
-        dataset_1d = Datasets.read(config[src]['dataset_1d'])
-
-        # stack reduce the data set
-        dataset_stack = dataset_1d.stack_reduce()
+        dataset_1d_file = config['global']['iact_dataset_1d'].replace("*", src)
+        if os.path.exists(dataset_1d_file.replace(".yaml", "_stacked.yaml")):
+            logging.info("Loading stacked dataset...")
+            dataset_stack = Datasets.read(dataset_1d_file.replace(".yaml", "_stacked.yaml"))
+        else:
+            dataset_1d = Datasets.read(config['global']['iact_dataset_1d'].replace("*", src))
+            # stack reduce the data set
+            logging.info("stacking datasets...")
+            dataset_stack = Datasets([dataset_1d.stack_reduce()])
+            dataset_stack.write(dataset_1d_file.replace(".yaml", "_stacked.yaml"))
 
         # load fermi SED for plotting
-        sed = np.load(config[src]['sed_file'], allow_pickle=True, encoding='latin1').flat[0]
+        logging.info("Loading Fermi files")
+        sed_file = glob.glob(config['global']['fermi_sed'].replace("*", src, 1))[0]
+        sed = np.load(sed_file, allow_pickle=True, encoding='latin1').flat[0]
 
         # load fermi best fit
-        d = np.load(config[src]['avg_fit_file'],
+        avg_file = config['global']['fermi_avg'].replace("*", src)
+        d = np.load(avg_file,
                     allow_pickle=True, encoding="latin1").flat[0]
         src_fgl_name = d['config']['selection']['target']
         src_dict = convert(d['sources'])[src_fgl_name]
@@ -124,6 +136,7 @@ if __name__ == '__main__':
         # important to get the scale
         # since interpolation of fermi llh was done with prefactor
         # corresponding to this scale
+        logging.info("Loading Fermi Likelihood cube")
         llh_file = config['global']['llh_fermi_file']
         llh = LogLikeCubeFermi(llh_file)
         llh.get_llh_one_source(src, norm_key='dnde_src')
@@ -139,15 +152,16 @@ if __name__ == '__main__':
         epl.parameters['lambda_'].max = 1.
 
         ebl = EBLAbsorptionNormSpectralModel.read(filename=config['global']['gammapy_ebl_file'],
-                                                  redshift=config[src]['z'])
+                                                  redshift=config[src]['z_src'])
 
         obs = epl * ebl
 
         # fit the point source model
         # without the cascade
+        logging.info("Fitting IACT data with point source")
         ps_model = SkyModel(spectral_model=obs.copy(), name='ps')
-        dataset_stack.models = ps_model
-        fit_1d = Fit([dataset_stack])
+        dataset_stack[0].models = ps_model
+        fit_1d = Fit(dataset_stack)
         fit_result_ps = fit_1d.run(optimize_opts=dict(print_level=1,
                                                       tol=0.1,
                                                       migrad_opts=dict(ncall=1000)
@@ -155,17 +169,18 @@ if __name__ == '__main__':
                                    )
 
         ps_model.parameters.to_table()
-        ps_model.spectral_model.model1.parameters.to_table()
+        ps_model_table = ps_model.spectral_model.model1.parameters.to_table()
+        logging.info(f"Final point source parameters:\n{ps_model_table}")
 
         # save fit point source fit result
         stat_results[src + "_ps"] = fit_result_ps.total_stat
 
         # compute flux points
-        e_min, e_max = dataset_stack.energy_range[0].value, 15.
+        e_min, e_max = dataset_stack[0].energy_range[0].value, 15.
         energy_edges = np.logspace(np.log10(e_min), np.log10(e_max), 10) * u.TeV
 
         fpe = FluxPointsEstimator(energy_edges=energy_edges, source=ps_model.name)
-        flux_points = fpe.run(datasets=[dataset_stack])
+        flux_points = fpe.run(datasets=dataset_stack)
         flux_points.table["is_ul"] = flux_points.table["ts"] < 4
 
         # plot the model and flux points
@@ -181,16 +196,18 @@ if __name__ == '__main__':
 
         # loop over magnetic fields
         for ib, B in enumerate(b_fields):
-            if not args.select_bfield is not None:
+            if args.select_bfield is not None:
                 if not B == args.select_bfield:
                     continue
 
-            logging.info(f" ------ B = {B:.2e} ------= ")
+            logging.info(f" ------ B = {B:.2e} ------- ")
 
             # Load the cascade
             # generate a casc map with low
             # spatial resolution to speed up calcuations
-            casc_1d = CascMap.gen_from_hd5f(config[src]['casc_file'][ib],
+            casc_file = config['global']['casc_file'].replace("*", "{0:.3f}".format(config[src]['z_casc']), 1)
+            casc_file = casc_file.replace("*", "{0:.2e}".format(B))
+            casc_1d = CascMap.gen_from_hd5f(casc_file,
                                             skycoord=geom.center_skydir,
                                             width=2 * np.round(on_radius.value / geom.pixel_scales[0].value, 0) *
                                                             geom.pixel_scales[0].value,
@@ -202,6 +219,7 @@ if __name__ == '__main__':
 
             # Initialize the cascade model
             # use the best fit model for the intrinsic spectrum
+            logging.info("Initializing cascade model ...")
             casc_spec = CascadeSpectralModel(casc_1d,
                                              ps_model.spectral_model.model1.copy(),
                                              ebl, on_region,
@@ -212,7 +230,6 @@ if __name__ == '__main__':
                                              use_gammapy_interp=False
                                              )
 
-            casc_spec.parameters.to_table()
 
             # Plot the total model
             if args.plots:
@@ -254,10 +271,12 @@ if __name__ == '__main__':
             casc_model.parameters['bias'].value = 0.
             casc_model.parameters['bias'].frozen = config['global']['fix_bias']
 
-            casc_model.parameters.to_table()
+            logging.info(f"Initial parameters:\n{casc_model.parameters.to_table()}")
 
             # interpolate the fermi likelihood for the right B field
-            llh.interp_llh(llh.params["B"][ib],   # choose a B field - should match casc file
+            # TODO: changes necessary if more than one coherence length or theta jet used
+            idb = np.where(llh.params["B"] == B)[0][0]
+            llh.interp_llh(llh.params["B"][idb],   # choose a B field - should match casc file
                            llh.params["maxTurbScale"][0],   # choose a turb scale - should match casc file
                            llh.params["th_jet"][0],  # choose a jet opening angle - should match casc file
                            method='linear',
@@ -291,7 +310,8 @@ if __name__ == '__main__':
                 plt.close("all")
 
             # initialize prior data set
-            ds = dataset_stack.copy()
+            logging.info("Initializing data set with priors")
+            ds = dataset_stack[0].copy()
             prior_stack = PriorSpectrumDatasetOnOff.from_spectrum_dataset_fermi_interp(ds,
                                                                                        llh_fermi_interp=None
                                                                                        )
@@ -303,13 +323,14 @@ if __name__ == '__main__':
 
             prior_stack.models = casc_model
 
+            logging.info("Performing combined fit")
             fit_casc = Fit([prior_stack])
             fit_result_casc = fit_casc.run(optimize_opts=dict(print_level=2,
                                                               tol=10.,
-                                                              migrad_opts=dict(ncall=100)
+                                                              migrad_opts=dict(ncall=1000)
                                                               )
                                            )
-            casc_model.parameters.to_table()
+            logging.info(f"Parameters after fit:\n{casc_model.parameters.to_table()}")
 
             # plot the flux points
             if args.plots:
@@ -361,11 +382,10 @@ if __name__ == '__main__':
             stat_results[src][ib] = fit_result_casc.total_stat
             stat_results[src + "_fermi_only"][ib] = fit_result_casc.total_stat
 
-# ### TO DO
+# TODO
 #  - Save results
-#  with folders for 1) data sets of IACTs, 2) log likelihood cube for fermi, 3) SED and average fit results from Fermi and 4) location of the cascade simulations files for each B field
-#  - yaml file should / could also include `tmax`, `rotation`, and additional parameter constraints, e.g., `bias`
 #  - make sure that bias implementation is correct
+#  - make control plots: likelihood surface, PS fit, combined fit with halo
 
 
 
