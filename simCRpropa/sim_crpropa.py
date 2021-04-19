@@ -351,7 +351,9 @@ class SimCRPropa(object):
 
         if self.Bfield['type'] == 'turbulence':
             logging.info('Box spacing for B field: {0:.3e} Mpc'.format(boxSpacing / Mpc))
-            vgrid = VectorGrid(boxOrigin, self.Bfield['NBgrid'], boxSpacing)
+            vgrid = Grid3f(boxOrigin,
+                           self.Bfield['NBgrid'],
+                           boxSpacing)
             initTurbulence(vgrid, self.Bfield['B'] * gauss, 
                             2 * boxSpacing, 
                             self.Bfield['maxTurbScale'] * Mpc, 
@@ -582,8 +584,7 @@ class SimCRPropa(object):
             photons = True
             electrons = True
             neutrinos = False
-            #thinning = 0.9
-            thinning = 0.95
+            thinning = 1.0
         else:
             photons = False
             electrons = False
@@ -650,9 +651,9 @@ class SimCRPropa(object):
 
         # for photo-pion production: 
         # PhotoPionProduction (PhotonField photonField=CMB, bool photons=false, bool neutrinos=false, 
-        # bool antiNucleons=false, double limit=0.1, bool haveRedshiftDependence=false)
-        self.m.add(PhotoPionProduction(CMB, photons, neutrinos, antinucleons, limit, True))
-        self.m.add(PhotoPionProduction(self._EBL, photons, neutrinos, antinucleons, limit, True))
+        # bool electrons=false, bool antiNucleons=false, double limit=0.1, bool haveRedshiftDependence=false)
+        self.m.add(PhotoPionProduction(CMB, photons, neutrinos, electrons, antinucleons, limit, True))
+        self.m.add(PhotoPionProduction(self._EBL, photons, neutrinos, electrons, antinucleons, limit, True))
 
         # ElectronPairProduction (PhotonField photonField=CMB, bool haveElectrons=false, double limit=0.1)
         # Electron-pair production of charged nuclei with background photons. 
