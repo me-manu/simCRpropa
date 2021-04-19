@@ -462,6 +462,10 @@ class PriorSpectrumDatasetOnOff(SpectrumDatasetOnOff):
     def llh_fermi_interp(self):
         return self._llh_fermi_interp
 
+    @property
+    def llh_fermi(self):
+        return self._llh_fermi
+
     @llh_fermi_interp.setter
     def llh_fermi_interp(self, llh_fermi_interp):
         self._llh_fermi_interp = llh_fermi_interp

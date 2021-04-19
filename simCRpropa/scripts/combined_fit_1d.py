@@ -89,7 +89,7 @@ if __name__ == '__main__':
 
     # initialize result arrays
     stat_results = {src: np.zeros(len(b_fields)) for src in config.keys() if not src == 'global'}
-    stat_results = {src + '_fermi_only': np.zeros(len(b_fields)) for src in config.keys() if not src == 'global'}
+    stat_results.update({src + '_fermi_only': np.zeros(len(b_fields)) for src in config.keys() if not src == 'global'})
     stat_results['tot'] = np.zeros(len(b_fields))
 
     # loop through the sources:
@@ -299,7 +299,7 @@ if __name__ == '__main__':
                              xy=(0.05,0.95), xycoords='axes fraction', color='w', va='top',
                              fontsize='x-large'
                              )
-                ax.colorbar(im, label='$\ln\mathcal{L}$')
+                plt.colorbar(im, label='$\ln\mathcal{L}$')
                 ax.tick_params(direction='out')
                 plt.xlabel("$\Gamma$")
                 plt.ylabel("$\log_{10}(N)$")
@@ -335,7 +335,7 @@ if __name__ == '__main__':
             # plot the flux points
             if args.plots:
                 fig = plt.figure(dpi=150)
-                ax = flux_points.plot(energy_power=2., label='data', marker='o', fig=fig)
+                ax = flux_points.plot(energy_power=2., label='data', marker='o')
 
                 # plot the final model
                 e_range = [1e-3, 10.] * u.TeV
@@ -377,13 +377,15 @@ if __name__ == '__main__':
                 plt.ylim(3e-15, 2e-10)
                 plt.xlim(1e-3, 2e1)
                 fig.savefig(f"plots/final_fits_{src:s}_b{B}.png")
+                plt.close("all")
 
             # save total stat results
             stat_results[src][ib] = fit_result_casc.total_stat
             stat_results['tot'][ib] += fit_result_casc.total_stat
             stat_results[src + "_fermi_only"][ib] = prior_stack.llh_fermi
 
-   np.save(stat_results, config['outifle'])
+    logging.info("Saving results")
+    np.save(config['global']['outfile'], stat_results)
 
 # TODO
 #  - make sure that bias implementation is correct
