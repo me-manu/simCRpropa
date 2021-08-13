@@ -62,6 +62,209 @@ cm = LinearSegmentedColormap.from_list(
 plt.register_cmap(cmap=cm)
 
 
+def perfrom_casc_fit(config, geom, ps_model, llh, dataset,
+                     on_radius=Angle("0.07 deg"), B=1e-16, plot=False):
+    """
+    Perform the combined cascade fit
+
+    Parameters
+    ----------
+    config: dict
+        Configuration dictionary
+
+    B: float
+        B-field strength
+
+    geom:`~gammapy.maps.WcsGeom` object
+        geometry of the dataset
+
+    on_radius: `~astropy.coordinates.Angle` object
+        Radius of ON region of IACT analysis
+
+    ps_model: `gammapy.model.modeling.models` object
+        Assumed point source model
+
+    llh: `simCRpropa.fermiinterp.LogLikeCubeFermi`
+        Interpolated Fermi likelihood cube
+
+    dataset: `~gammapy.datasets.SpectrumOnOffDataset`
+        The IACT data set
+
+    plot: bool
+        If true, generate diagnostic plots
+
+    Returns
+    -------
+    Tuple containing -2 * ln (likelihood values) for fit
+    on Fermi-LAT data only and combined fit
+    """
+
+    logging.info(f" ------ B = {B:.2e} ------- ")
+    # Load the cascade
+    # generate a casc map with low
+    # spatial resolution to speed up calculations
+    ebl = EBLAbsorptionNormSpectralModel.read(filename=config['global']['gammapy_ebl_file'],
+                                              redshift=config[src]['z_src'])
+
+    casc_file = config['global']['casc_file'].replace("*", "{0:.3f}".format(config[src]['z_casc']), 1)
+    casc_file = casc_file.replace("*", "{0:.2e}".format(B))
+    casc_1d = CascMap.gen_from_hd5f(casc_file,
+                                    skycoord=geom.center_skydir,
+                                    width=2 * np.round(on_radius.value / geom.pixel_scales[0].value, 0) *
+                                          geom.pixel_scales[0].value,
+                                    binsz=geom.pixel_scales[0].value,
+                                    ebins=21,
+                                    id_detection=22,
+                                    smooth_kwargs={'kernel': Gaussian2DKernel, 'threshold': 2., 'steps': 50}
+                                    )
+    # Initialize the cascade model
+    # use the best fit model for the intrinsic spectrum
+    logging.info("Initializing cascade model ...")
+    casc_spec = CascadeSpectralModel(casc_1d,
+                                     ps_model.spectral_model.model1.copy(),
+                                     ebl, on_region,
+                                     rotation=config['global']['rotation'] * u.deg,
+                                     tmax=config['global']['tmax'] * u.yr,
+                                     bias=0. * u.dimensionless_unscaled,
+                                     energy_unit_spectral_model="TeV",
+                                     use_gammapy_interp=False
+                                     )
+    # Plot the total model
+    if plot:
+        fig = plt.figure(dpi=150)
+        ax = fig.add_subplot(111)
+
+        e_range = [1e-3, 10.] * u.TeV
+        casc_spec.add_primary = True
+        casc_spec.plot(ax=ax, energy_range=e_range, energy_power=2)
+        ps_model.spectral_model.plot(ax=ax, energy_range=e_range, energy_power=2)
+        casc_spec.add_primary = False
+        casc_spec.plot(ax=ax, energy_range=e_range, energy_power=2)
+        casc_spec.add_primary = True
+        plt.ylim(1e-15, 3e-12)
+
+        ax.grid()
+        fig.savefig(f"plots/{src:s}_B{B}_casc+ps_models.png")
+        plt.close("all")
+
+    # Perform the fit with the cascade
+    casc_model = SkyModel(spectral_model=casc_spec, name='casc')
+    # limit the parameter ranges and change the tolerance
+    # index
+    casc_model.parameters['index'].min = llh.params['Index'].min()
+    casc_model.parameters['index'].max = llh.params['Index'].max()
+    # amplitude
+    casc_model.parameters['amplitude'].min = casc_model.parameters['amplitude'].value / 10.
+    casc_model.parameters['amplitude'].max = casc_model.parameters['amplitude'].value * 10.
+    # cutoff
+    casc_model.parameters['lambda_'].min = 1. / llh.params['Cutoff'].max()
+    casc_model.parameters['lambda_'].max = 1. / llh.params['Cutoff'].min()
+    casc_model.parameters['lambda_'].frozen = config['global']['fix_cutoff']
+    # bias between Fermi and HESS
+    casc_model.parameters['bias'].value = 0.
+    casc_model.parameters['bias'].frozen = config['global']['fix_bias']
+    logging.info(f"Initial parameters:\n{casc_model.parameters.to_table()}")
+    # interpolate the fermi likelihood for the right B field
+    # TODO: changes necessary if more than one coherence length or theta jet used
+    idb = np.where(llh.params["B"] == B)[0][0]
+    llh.interp_llh(llh.params["B"][idb],  # choose a B field - should match casc file
+                   llh.params["maxTurbScale"][0],  # choose a turb scale - should match casc file
+                   llh.params["th_jet"][0],  # choose a jet opening angle - should match casc file
+                   method='linear',
+                   )
+    # plot the interpolation
+    if plot:
+        fig = plt.figure(dpi=150)
+        ax = fig.add_subplot(111)
+
+        # plot a likelihood surface
+        # choose a slice in cut off energy
+        cut_id = 1
+        # build a grid of indices and norms
+        ii, nn = np.meshgrid(llh._params["Index"], llh.log_norm_array, indexing='ij')
+        # plot the log likehood grid
+        dlogl = 2. * (llh._llh_grid[cut_id] - llh._llh_grid[cut_id].max())
+        im = ax.pcolormesh(ii, nn, dlogl, cmap=cmap_name, vmin=-10, vmax=0)
+        ax.annotate("$E_\mathrm{{cut}} = {0:.0f}$TeV".format(llh.params["Cutoff"][cut_id]),
+                    xy=(0.05, 0.95), xycoords='axes fraction', color='w', va='top',
+                    fontsize='x-large'
+                    )
+        plt.colorbar(im, label='$\ln\mathcal{L}$')
+        ax.tick_params(direction='out')
+        plt.xlabel("$\Gamma$")
+        plt.ylabel("$\log_{10}(N)$")
+        plt.grid(color='0.7', ls=':')
+        plt.subplots_adjust(bottom=0.2, left=0.2)
+        fig.savefig("plots/{1:s}_lnl_fermi_grid_Ecut{0:.0f}TeV_B{2}.png".format(
+            llh.params["Cutoff"][cut_id], src, B))
+        plt.close("all")
+    # initialize prior data set
+    logging.info("Initializing data set with priors")
+    prior_stack = PriorSpectrumDatasetOnOff.from_spectrum_dataset_fermi_interp(dataset,
+                                                                               llh_fermi_interp=None
+                                                                               )
+    # add the interpolator to the data set
+    prior_stack.llh_fermi_interp = llh.interp
+    # add the reference energy at which interpolation was performed (in MeV)
+    prior_stack.ref_energy = src_dict['spectral_pars']['Scale']['value']
+    prior_stack.models = casc_model
+    logging.info("Performing combined fit")
+    fit_casc = Fit([prior_stack])
+    fit_result_casc = fit_casc.run(optimize_opts=dict(print_level=2,
+                                                      tol=10.,
+                                                      migrad_opts=dict(ncall=1000)
+                                                      )
+                                   )
+    logging.info(f"Parameters after fit:\n{casc_model.parameters.to_table()}")
+    # plot the flux points
+    if plot:
+        fig = plt.figure(dpi=150)
+        ax = flux_points.plot(energy_power=2., label='data', marker='o')
+
+        # plot the final model
+        e_range = [1e-3, 10.] * u.TeV
+        # total model
+        casc_model.spectral_model.add_primary = True
+        casc_model.spectral_model.plot(ax=ax, energy_range=e_range, energy_power=2, label='Total', color='k')
+        casc_model.spectral_model.plot_error(ax=ax, energy_range=e_range, energy_power=2)
+        # point source
+        obs_model = casc_model.spectral_model.intrinsic_spectral_model * casc_model.spectral_model.ebl
+        obs_model.plot(ax=ax, energy_range=e_range, energy_power=2, label='Point source', color='k', ls='--')
+
+        # cascade
+        casc_model.spectral_model.add_primary = False
+        casc_model.spectral_model.plot(ax=ax,
+                                       energy_range=e_range,
+                                       energy_power=2,
+                                       label='Cascade',
+                                       color='k',
+                                       ls='-.')
+        casc_model.spectral_model.add_primary = True
+
+        # fermi SED
+        SEDPlotter.plot_sed(sed, ax=ax, ms=6.,
+                            marker='.',
+                            color='C1',
+                            mec='C1',
+                            alpha=1.,
+                            noline=False,
+                            band_alpha=0.2,
+                            line_alpha=0.5,
+                            band_linestyle='-',
+                            label="Fermi",
+                            flux_unit='TeV cm-2 s-1',
+                            energy_unit='TeV',
+                            print_name=False
+                            )
+
+        ax.legend(loc='lower center')
+        plt.ylim(3e-15, 2e-10)
+        plt.xlim(1e-3, 2e1)
+        fig.savefig(f"plots/final_fits_{src:s}_b{B}.png")
+        plt.close("all")
+
+    return prior_stack.llh_fermi, fit_result_casc.total_stat
+
 if __name__ == '__main__':
     usage = "usage: %(prog)s --conf config.yaml"
     description = "Run the combined fermi and HESS fit"
@@ -201,189 +404,15 @@ if __name__ == '__main__':
                 if not B == args.select_bfield:
                     continue
 
-            logging.info(f" ------ B = {B:.2e} ------- ")
-
-            # Load the cascade
-            # generate a casc map with low
-            # spatial resolution to speed up calcuations
-            casc_file = config['global']['casc_file'].replace("*", "{0:.3f}".format(config[src]['z_casc']), 1)
-            casc_file = casc_file.replace("*", "{0:.2e}".format(B))
-            casc_1d = CascMap.gen_from_hd5f(casc_file,
-                                            skycoord=geom.center_skydir,
-                                            width=2 * np.round(on_radius.value / geom.pixel_scales[0].value, 0) *
-                                                            geom.pixel_scales[0].value,
-                                            binsz=geom.pixel_scales[0].value,
-                                            ebins=21,
-                                            id_detection=22,
-                                            smooth_kwargs={'kernel': Gaussian2DKernel, 'threshold': 2., 'steps': 50}
-                                            )
-
-            # Initialize the cascade model
-            # use the best fit model for the intrinsic spectrum
-            logging.info("Initializing cascade model ...")
-            casc_spec = CascadeSpectralModel(casc_1d,
-                                             ps_model.spectral_model.model1.copy(),
-                                             ebl, on_region,
-                                             rotation=config['global']['rotation'] * u.deg,
-                                             tmax=config['global']['tmax'] * u.yr,
-                                             bias=0. * u.dimensionless_unscaled,
-                                             energy_unit_spectral_model="TeV",
-                                             use_gammapy_interp=False
-                                             )
-
-
-            # Plot the total model
-            if args.plots:
-                fig = plt.figure(dpi=150)
-                ax = fig.add_subplot(111)
-
-                e_range = [1e-3, 10.] * u.TeV
-                casc_spec.add_primary = True
-                casc_spec.plot(ax=ax, energy_range=e_range, energy_power=2)
-                ps_model.spectral_model.plot(ax=ax, energy_range=e_range, energy_power=2)
-                casc_spec.add_primary = False
-                casc_spec.plot(ax=ax, energy_range=e_range, energy_power=2)
-                casc_spec.add_primary = True
-                plt.ylim(1e-15, 3e-12)
-
-                ax.grid()
-                fig.savefig(f"plots/{src:s}_B{B}_casc+ps_models.png")
-                plt.close("all")
-
-            # Perform the fit with the cascade
-            casc_model = SkyModel(spectral_model=casc_spec, name='casc')
-
-            # limit the parameter ranges and change the tolerance
-
-            # index
-            casc_model.parameters['index'].min = llh.params['Index'].min()
-            casc_model.parameters['index'].max = llh.params['Index'].max()
-
-            # amplitude
-            casc_model.parameters['amplitude'].min = casc_model.parameters['amplitude'].value / 10.
-            casc_model.parameters['amplitude'].max = casc_model.parameters['amplitude'].value * 10.
-
-            # cutoff
-            casc_model.parameters['lambda_'].min = 1. / llh.params['Cutoff'].max()
-            casc_model.parameters['lambda_'].max = 1. / llh.params['Cutoff'].min()
-            casc_model.parameters['lambda_'].frozen = config['global']['fix_cutoff']
-
-            # bias between Fermi and HESS
-            casc_model.parameters['bias'].value = 0.
-            casc_model.parameters['bias'].frozen = config['global']['fix_bias']
-
-            logging.info(f"Initial parameters:\n{casc_model.parameters.to_table()}")
-
-            # interpolate the fermi likelihood for the right B field
-            # TODO: changes necessary if more than one coherence length or theta jet used
-            idb = np.where(llh.params["B"] == B)[0][0]
-            llh.interp_llh(llh.params["B"][idb],   # choose a B field - should match casc file
-                           llh.params["maxTurbScale"][0],   # choose a turb scale - should match casc file
-                           llh.params["th_jet"][0],  # choose a jet opening angle - should match casc file
-                           method='linear',
-                          )
-
-            # plot the interpolation
-            if args.plots:
-                fig = plt.figure(dpi=150)
-                ax = fig.add_subplot(111)
-
-                # plot a likelihood surface
-                # choose a slice in cut off energy
-                cut_id = 1
-                # build a grid of indices and norms
-                ii, nn = np.meshgrid(llh._params["Index"], llh.log_norm_array, indexing='ij')
-                # plot the log likehood grid
-                dlogl = 2. * (llh._llh_grid[cut_id] - llh._llh_grid[cut_id].max())
-                im = ax.pcolormesh(ii, nn, dlogl, cmap=cmap_name, vmin=-10, vmax=0)
-                ax.annotate("$E_\mathrm{{cut}} = {0:.0f}$TeV".format(llh.params["Cutoff"][cut_id]),
-                             xy=(0.05,0.95), xycoords='axes fraction', color='w', va='top',
-                             fontsize='x-large'
-                             )
-                plt.colorbar(im, label='$\ln\mathcal{L}$')
-                ax.tick_params(direction='out')
-                plt.xlabel("$\Gamma$")
-                plt.ylabel("$\log_{10}(N)$")
-                plt.grid(color='0.7', ls=':')
-                plt.subplots_adjust(bottom=0.2, left=0.2)
-                fig.savefig("plots/{1:s}_lnl_fermi_grid_Ecut{0:.0f}TeV_B{2}.png".format(
-                    llh.params["Cutoff"][cut_id], src, B))
-                plt.close("all")
-
-            # initialize prior data set
-            logging.info("Initializing data set with priors")
             ds = dataset_stack[0].copy()
-            prior_stack = PriorSpectrumDatasetOnOff.from_spectrum_dataset_fermi_interp(ds,
-                                                                                       llh_fermi_interp=None
-                                                                                       )
-            # add the interpolator to the data set
-            prior_stack.llh_fermi_interp = llh.interp
 
-            # add the reference energy at which interpolation was performed (in MeV)
-            prior_stack.ref_energy = src_dict['spectral_pars']['Scale']['value']
-
-            prior_stack.models = casc_model
-
-            logging.info("Performing combined fit")
-            fit_casc = Fit([prior_stack])
-            fit_result_casc = fit_casc.run(optimize_opts=dict(print_level=2,
-                                                              tol=10.,
-                                                              migrad_opts=dict(ncall=1000)
-                                                              )
-                                           )
-            logging.info(f"Parameters after fit:\n{casc_model.parameters.to_table()}")
-
-            # plot the flux points
-            if args.plots:
-                fig = plt.figure(dpi=150)
-                ax = flux_points.plot(energy_power=2., label='data', marker='o')
-
-                # plot the final model
-                e_range = [1e-3, 10.] * u.TeV
-                # total model
-                casc_model.spectral_model.add_primary = True
-                casc_model.spectral_model.plot(ax=ax, energy_range=e_range, energy_power=2, label='Total', color='k')
-                casc_model.spectral_model.plot_error(ax=ax, energy_range=e_range, energy_power=2)
-                # point source
-                obs_model = casc_model.spectral_model.intrinsic_spectral_model * casc_model.spectral_model.ebl
-                obs_model.plot(ax=ax, energy_range=e_range, energy_power=2, label='Point source', color='k', ls='--')
-
-                # cascade
-                casc_model.spectral_model.add_primary = False
-                casc_model.spectral_model.plot(ax=ax,
-                                               energy_range=e_range,
-                                               energy_power=2,
-                                               label='Cascade',
-                                               color='k',
-                                               ls='-.')
-                casc_model.spectral_model.add_primary = True
-
-                # fermi SED
-                SEDPlotter.plot_sed(sed, ax=ax, ms=6.,
-                                    marker='.',
-                                    color='C1',
-                                    mec='C1',
-                                    alpha=1.,
-                                    noline=False,
-                                    band_alpha=0.2,
-                                    line_alpha=0.5,
-                                    band_linestyle='-',
-                                    label="Fermi",
-                                    flux_unit='TeV cm-2 s-1',
-                                    energy_unit='TeV',
-                                    print_name=False
-                                    )
-
-                ax.legend(loc='lower center')
-                plt.ylim(3e-15, 2e-10)
-                plt.xlim(1e-3, 2e1)
-                fig.savefig(f"plots/final_fits_{src:s}_b{B}.png")
-                plt.close("all")
+            llh_fermi, llh_combined = perfrom_casc_fit(config, geom, ps_model, llh, ds,
+                                                       on_radius=on_radius, B=B, plot=args.plots)
 
             # save total stat results
-            stat_results[src][ib] = fit_result_casc.total_stat
-            stat_results_tot[ib] += fit_result_casc.total_stat
-            stat_results_fermi_only[src][ib] = prior_stack.llh_fermi
+            stat_results[src][ib] = llh_combined
+            stat_results_tot[ib] += llh_combined
+            stat_results_fermi_only[src][ib] = llh_combined
 
         logging.info(f"Saving result for sources {src:s}")
         np.save(os.path.join(config['global']['outdir'], "tmax{0:e.1}", "tot.npy"), stat_results_tot)
