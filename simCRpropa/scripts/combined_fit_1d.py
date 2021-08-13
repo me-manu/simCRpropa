@@ -89,8 +89,9 @@ if __name__ == '__main__':
 
     # initialize result arrays
     stat_results = {src: np.zeros(len(b_fields)) for src in config.keys() if not src == 'global'}
-    stat_results.update({src + '_fermi_only': np.zeros(len(b_fields)) for src in config.keys() if not src == 'global'})
-    stat_results['tot'] = np.zeros(len(b_fields))
+    stat_results_fermi_only = {src: np.zeros(len(b_fields)) for src in config.keys() if not src == 'global'}
+    stat_results_ps = {src: np.zeros(len(b_fields)) for src in config.keys() if not src == 'global'}
+    stat_results_tot = np.zeros(len(b_fields))
 
     # loop through the sources:
     for src in config.keys():
@@ -173,7 +174,7 @@ if __name__ == '__main__':
         logging.info(f"Final point source parameters:\n{ps_model_table}")
 
         # save fit point source fit result
-        stat_results[src + "_ps"] = fit_result_ps.total_stat
+        stat_results_ps[src] = fit_result_ps.total_stat
 
         # compute flux points
         e_min, e_max = dataset_stack[0].energy_range[0].value, 15.
@@ -381,14 +382,14 @@ if __name__ == '__main__':
 
             # save total stat results
             stat_results[src][ib] = fit_result_casc.total_stat
-            stat_results['tot'][ib] += fit_result_casc.total_stat
-            stat_results[src + "_fermi_only"][ib] = prior_stack.llh_fermi
+            stat_results_tot[ib] += fit_result_casc.total_stat
+            stat_results_fermi_only[src][ib] = prior_stack.llh_fermi
 
-    logging.info("Saving results")
-    np.save(config['global']['outfile'], stat_results)
+        logging.info(f"Saving result for sources {src:s}")
+        np.save(os.path.join(config['global']['outdir'], "tmax{0:e.1}", "tot.npy"), stat_results_tot)
+
+    logging.info("Saving total result")
+    np.save(os.path.join(config['global']['outdir'], "tmax{0:e.1}", "tot.npy"), stat_results_tot)
 
 # TODO
 #  - make sure that bias implementation is correct
-
-
-
