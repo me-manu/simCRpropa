@@ -61,8 +61,67 @@ cm = LinearSegmentedColormap.from_list(
         cmap_name, colors, N=200)
 plt.register_cmap(cmap=cm)
 
+def plot_likelihood_vs_B(config, select_source=None, skip_sources=[]):
+    # loop through the sources:
 
-def perfrom_casc_fit(config, geom, ps_model, llh, dataset,
+    outdir = os.path.join(config['global']['outdir'], "tmax{0:.1e}".format(config['global']['tmax']))
+    results = {}
+    src_names = [] 
+
+    for src in config.keys():
+        if src == 'global':
+            continue
+
+        if select_source is not None:
+            if not src == args.select_source:
+                continue
+
+        if src in skip_sources:
+            logging.info(f"Skipping source {src:s}")
+            continue
+
+        logging.info(f" ====== {src} ======= ")
+
+        logging.info(f"Loading result for source {src:s}")
+        try:
+            results[src] = np.load(os.path.join(outdir, f"{src:s}.npz"), allow_pickle=True)
+            src_names.append(src)
+
+        except IOError:
+            logging.error("File not found: {0:s}",format(os.path.join(outdir, f"{src:s}.npz")))
+            continue
+
+            #np.savez(os.path.join(outdir, f"{src:s}.npz"),
+            #         combined=stat_results[src],
+            #         fermi_only=stat_results_fermi_only[src],
+            #         ps=stat_results_ps[src])
+    tot_stat = np.array([results[src]['combined'] for src in src_names])
+    b_fields = config['global']['b_fields']
+
+    # likelihoods for each source
+    for i, ts in enumerate(tot_stat):
+        plt.semilogx(b_fields, ts - ts.min(), label=src_names[i])
+    
+    summed_ts = np.sum(tot_stat, axis=0) - np.sum(tot_stat, axis=0).min()
+    plt.semilogx(b_fields, summed_ts, label="Summed", lw=2, color="k")
+    
+    t_max_power = np.floor(np.log10(config['global']['tmax']))
+    t_max_base = config['global']['tmax'] / 10.**t_max_power
+    title = r"$t_\mathrm{{max}}$ = {0:.2f}$\times10^{{{1:.0f}}}$ yrs, $\theta_\mathrm{{obs}} = {2:.1f}^\circ$, $\phi = {3:.1f}^\circ$".format(
+                t_max_base, t_max_power, 0., config['global']['rotation'])
+
+    ax = plt.gca()
+    ax.axhline(2.71, ls='--', color='k', lw=2)
+    ax.set_ylim(-.5, 15.)
+    ax.grid(which="both")
+    ax.legend(title=title, fontsize='x-small', ncol=3)
+    ax.set_xlabel("$B$-field strength (G)")
+    ax.set_ylabel("$-2\Delta\ln\mathcal{L}$")
+
+    return ax
+
+
+def perform_casc_fit(config, geom, ps_model, llh, dataset,
                      on_radius=Angle("0.07 deg"), B=1e-16, plot=False):
     """
     Perform the combined cascade fit
@@ -184,7 +243,14 @@ def perfrom_casc_fit(config, geom, ps_model, llh, dataset,
         ii, nn = np.meshgrid(llh._params["Index"], llh.log_norm_array, indexing='ij')
         # plot the log likehood grid
         dlogl = 2. * (llh._llh_grid[cut_id] - llh._llh_grid[cut_id].max())
-        im = ax.pcolormesh(ii, nn, dlogl, cmap=cmap_name, vmin=-10, vmax=0)
+
+        vmin = -10.
+        # check if most points have higher dlogl,
+        # and if so, adjust color scaling
+        if dlogl[dlogl > vmin].size < 10:
+            vmin = 3. * dlogl[dlogl < 0].max()
+
+        im = ax.pcolormesh(ii, nn, dlogl, cmap=cmap_name, vmin=vmin, vmax=0)
         ax.annotate("$E_\mathrm{{cut}} = {0:.0f}$TeV".format(llh.params["Cutoff"][cut_id]),
                     xy=(0.05, 0.95), xycoords='axes fraction', color='w', va='top',
                     fontsize='x-large'
@@ -273,6 +339,7 @@ if __name__ == '__main__':
     parser.add_argument('--select-source')
     parser.add_argument('--select-bfield', type=float)
     parser.add_argument('--plots', action="store_true", help="Create plots")
+    parser.add_argument('--overwrite', action="store_true", help="Overwrite result files")
 
     args = parser.parse_args()
     init_logging()
@@ -295,6 +362,11 @@ if __name__ == '__main__':
     stat_results_fermi_only = {src: np.zeros(len(b_fields)) for src in config.keys() if not src == 'global'}
     stat_results_ps = {src: np.zeros(len(b_fields)) for src in config.keys() if not src == 'global'}
     stat_results_tot = np.zeros(len(b_fields))
+
+    # set up outdir 
+    outdir = os.path.join(config['global']['outdir'], "tmax{0:.1e}".format(config['global']['tmax']))
+    if not os.path.exists(outdir):
+        os.makedirs(outdir)
 
     # loop through the sources:
     for src in config.keys():
@@ -352,8 +424,10 @@ if __name__ == '__main__':
             lambda_=0.1 * u.Unit("TeV-1"),
             reference=1 * u.TeV,
         )
-        epl.parameters['lambda_'].min = 0.
-        epl.parameters['lambda_'].max = 1.
+        #epl.parameters['lambda_'].min = 0.
+        #epl.parameters['lambda_'].max = 1.
+        epl.parameters['lambda_'].min = 1. / llh.params['Cutoff'].max()
+        epl.parameters['lambda_'].max = 1. / llh.params['Cutoff'].min()
 
         ebl = EBLAbsorptionNormSpectralModel.read(filename=config['global']['gammapy_ebl_file'],
                                                   redshift=config[src]['z_src'])
@@ -399,26 +473,33 @@ if __name__ == '__main__':
             plt.close("all")
 
         # loop over magnetic fields
-        for ib, B in enumerate(b_fields):
-            if args.select_bfield is not None:
-                if not B == args.select_bfield:
-                    continue
+        if not os.path.exists(os.path.join(outdir, f"{src:s}.npz")) or args.overwrite:
+            for ib, B in enumerate(b_fields):
+                if args.select_bfield is not None:
+                    if not B == args.select_bfield:
+                        continue
 
-            ds = dataset_stack[0].copy()
+                ds = dataset_stack[0].copy()
 
-            llh_fermi, llh_combined = perfrom_casc_fit(config, geom, ps_model, llh, ds,
-                                                       on_radius=on_radius, B=B, plot=args.plots)
+                llh_fermi, llh_combined = perform_casc_fit(config, geom, ps_model, llh, ds,
+                                                           on_radius=on_radius, B=B, plot=args.plots)
 
-            # save total stat results
-            stat_results[src][ib] = llh_combined
-            stat_results_tot[ib] += llh_combined
-            stat_results_fermi_only[src][ib] = llh_combined
+                # save total stat results
+                stat_results[src][ib] = llh_combined
+                stat_results_tot[ib] += llh_combined
+                stat_results_fermi_only[src][ib] = llh_fermi
 
-        logging.info(f"Saving result for sources {src:s}")
-        np.save(os.path.join(config['global']['outdir'], "tmax{0:e.1}", "tot.npy"), stat_results_tot)
+            logging.info(f"Saving result for source {src:s}")
+            np.savez(os.path.join(outdir, f"{src:s}.npz"),
+                     combined=stat_results[src],
+                     fermi_only=stat_results_fermi_only[src],
+                     ps=stat_results_ps[src])
+        else:
+            res = np.load(os.path.join(outdir, f"{src:s}.npz"), allow_pickle=True)
+            stat_results_tot += res['combined']
 
     logging.info("Saving total result")
-    np.save(os.path.join(config['global']['outdir'], "tmax{0:e.1}", "tot.npy"), stat_results_tot)
+    np.save(os.path.join(outdir, "tot.npy"), stat_results_tot)
 
 # TODO
 #  - make sure that bias implementation is correct

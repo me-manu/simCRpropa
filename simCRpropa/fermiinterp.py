@@ -140,7 +140,21 @@ class LogLikeCubeFermi(object):
         # first pass: bring likelihood cube to regular grid over norms
         for i, cut in enumerate(self._params['Cutoff']):
             for j, ind in enumerate(self._params['Index']):
-                spline = USpline(np.log10(norms[i, j]), llh[i, j], k=2, s=0, ext='extrapolate')
+
+                # for some reason, sometimes same normalization values are stored, 
+                # this let's the interpolation crash
+                if not np.all(np.diff(np.log10(norms[i,j])) > 0.):
+                    mcut = np.diff(np.log10(norms[i,j])) > 0.
+                    norms_increasing = np.insert(norms[i,j][1:][mcut], 0, norms[i,j][0])
+                    llh_increasing = np.insert(llh[i,j][1:][mcut], 0, llh[i,j][0])
+                    idxs = np.argsort(norms_increasing)
+                    spline = USpline(np.log10(norms_increasing[idxs]),
+                                     llh_increasing[idxs],
+                                     k=2, s=0, ext='extrapolate')
+
+
+                else:
+                    spline = USpline(np.log10(norms[i, j]), llh[i, j], k=2, s=0, ext='extrapolate')
                 self._llh_grid[i, j] = spline(self._log_norm_array)
 
         self._llh_grid_extend = np.zeros((self._params["Cutoff"].size,

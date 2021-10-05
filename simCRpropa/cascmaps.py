@@ -4,11 +4,12 @@ import yaml
 import h5py
 import logging
 import numpy as np
+import json
 from astropy import units as u
 from astropy import constants as c
 from astropy.cosmology import FlatLambdaCDM, Planck15
 from simCRpropa import rotations as rot
-from gammapy.maps import Map, MapAxis
+from gammapy.maps import WcsMap, Map, MapAxis, WcsGeom
 from scipy.integrate import simps
 from scipy.ndimage import rotate
 from scipy.interpolate import UnivariateSpline, interp1d
@@ -329,7 +330,8 @@ class CascMap(object):
                                           steps))
 
         self._einj = np.array(self._einj) * edges['energy_injected'].unit
-        self._weights = np.ones_like(self._m.geom.axes['energy_injected'].center.value) * \
+        e_inj_axis = self._m.geom.axes['energy_injected']
+        self._weights = np.ones_like(e_inj_axis.center.value) * \
                         u.dimensionless_unscaled
 
         self._tmax = edges['t_delay'].max() * u.yr
@@ -1041,16 +1043,29 @@ class CascMap(object):
         # force values smaller than zero to zero
         m = map_export.data <= 0.
         map_export.data[m] = 1e-40
-        # change the unit of flux
-        map_export.quantity = map_export.quantity.to(target_flux_unit)
 
+        # create a new geometry with same WCS
+        # but energy unit in MeV
+        # since there does not seem to be an easy way to simply 
         # change the unit of the energy axis
-        idx = map_export.geom.axes["energy_true"]
-        map_export.geom.axes[idx].edges = map_export.geom.axes[idx].edges.to(target_energy_unit)
-        map_export.geom.axes[idx].center = map_export.geom.axes[idx].center.to(target_energy_unit)
-        # ugly work around
-        map_export.geom.axes[idx]._unit = u.Unit("MeV")
-        hdu_list = map_export.to_hdulist(conv=conv, hdu_bands=hdu_bands)
+        wcs = wcs = map_export.geom.drop("energy_true")  # get the spatial wcs
+        # create the new energy axis in MeV
+        energy_true_MeV = MapAxis.from_energy_edges(map_export.geom.axes["energy_true"].edges.to("MeV"),
+                                                    name="energy")
+        # set up the new geometry
+        geom_new = WcsGeom.create(binsz=np.squeeze(wcs.width / wcs.npix),
+                                  width=np.squeeze(wcs.width),
+                                  skydir=wcs.center_skydir,
+                                  frame=wcs.frame,
+                                  axes=[energy_true_MeV])
+
+        # create the new map and fill it
+        wcs_map_export= WcsMap.from_geom(geom_new,
+                                         data=map_export.quantity.to(target_flux_unit).value,
+                                         unit=target_flux_unit)
+
+        # export new map
+        hdu_list = wcs_map_export.to_hdulist(hdu_bands=hdu_bands, format="fgst-template")
 
         if extra_header_dict is not None:
             if 'META' in hdu_list[0].header.keys():
@@ -1058,9 +1073,11 @@ class CascMap(object):
                 d.update(extra_header_dict)
             else:
                 d = extra_header_dict
-            hdu_list[0].header['META'] = str(d)
+            hdu_list[0].header['META'] = json.dumps(d)
 
         hdu_list.writeto(filename, overwrite=overwrite)
+        # free up memory
+        del wcs_map_export, map_export
 
     def plot_spectrum(self,
                       radius=None,
