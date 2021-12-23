@@ -8,6 +8,7 @@ from gammapy.datasets.spectrum import SpectrumDatasetOnOff
 from gammapy.datasets import Datasets
 from scipy.interpolate import interp1d
 from astropy import units as u
+from collections.abc import Iterable
 
 
 class DiffuseCascadeCube(SpatialModel):
@@ -125,8 +126,10 @@ class DiffuseCascadeCube(SpatialModel):
             self._cached_weights = None
 
         if self._cached_value is None or self._cached_weights is None:
-            self._cached_coordinates = (lon, lat, energy * (1. + bias))
-            self._cached_value = self._interpolate(lon, lat, energy)
+            #self._cached_coordinates = (lon, lat, energy * (1. + bias))
+            #self._cached_value = self._interpolate(lon, lat, energy)
+            self._cached_coordinates = (lon, lat, energy)
+            self._cached_value = self._interpolate(lon, lat, energy * (1. + bias))
             self._cached_weights = self.cascmap.weights
 
         return u.Quantity(self._cached_value, self.cascmap.casc_obs.unit, copy=False)
@@ -478,6 +481,58 @@ class PriorSpectrumDatasetOnOff(SpectrumDatasetOnOff):
     def ref_energy(self, ref_energy):
         self._ref_energy = ref_energy
 
+    def get_llh_fermi(self, amplitude=None, index=None, lambda_=None, reference=None, set_attribute=True):
+
+        if amplitude is None:
+            amplitude = self.models['casc'].parameters['amplitude'].quantity
+        if index is None:
+            index = self.models['casc'].parameters['index'].quantity
+        if lambda_ is None:
+            lambda_ = self.models['casc'].parameters['lambda_'].quantity
+        if reference is None:
+            reference = self.models['casc'].parameters['reference'].quantity
+
+        amplitude = amplitude.to('MeV-1 cm-2 s-1').value
+        reference = reference.to('MeV').value
+        index = index.value
+        cutoff = 1. / lambda_.to("TeV-1").value
+
+        if not isinstance(amplitude, Iterable):
+            amplitude = np.array([amplitude])
+
+        if not isinstance(index, Iterable):
+            index = np.array([index])
+
+        if not isinstance(cutoff, Iterable):
+            cutoff = np.array([cutoff])
+
+        # correct amplitude for different reference energy
+        # for which the fermi likelihood scan was performed
+        if self._ref_energy is not None:
+            if amplitude.size == index.size:
+                amplitude *= (self._ref_energy / reference) ** -index
+            elif index.size == 1:
+                amplitude *= (self._ref_energy / reference) ** -index[0]
+            else:
+                raise ValueError("Incompatible shapes between index and amplitude")
+
+        # build coordinate array for interpolation of the shape cutoff, index, log10(amplitude)
+        # should have shape (n_coords, 3)
+        coord_list = [cutoff, index, np.log10(amplitude)]
+        if cutoff.size == index.size == amplitude.size == 1:
+            result = -2. * self._llh_fermi_interp([cutoff[0], index[0], np.log10(amplitude[0])])[0]
+
+        else:
+            sizes = [t.size for t in coord_list]
+            max_size = np.max(sizes)
+            coords = np.array([[coord_list[i][j if j < sizes[i] - 1 else 0] for i in range(len(coord_list))] for j in range(max_size)])
+            result = -2. * self._llh_fermi_interp(coords)
+
+        if set_attribute:
+            self._llh_fermi = result
+
+        return result 
+
     def stat_sum(self):
         # calculate -2 * log likelihood
         # from dataset
@@ -485,18 +540,20 @@ class PriorSpectrumDatasetOnOff(SpectrumDatasetOnOff):
 
         # add the fermi likelihood from interpolation
         if self._llh_fermi_interp is not None:
-            amplitude = self.models['casc'].parameters['amplitude'].quantity.to('MeV-1 cm-2 s-1').value
-            reference = self.models['casc'].parameters['reference'].quantity.to('MeV').value
-            index = self.models['casc'].parameters['index'].value
+            #amplitude = self.models['casc'].parameters['amplitude'].quantity.to('MeV-1 cm-2 s-1').value
+            #reference = self.models['casc'].parameters['reference'].quantity.to('MeV').value
+            #index = self.models['casc'].parameters['index'].value
 
             # correct amplitude for different reference energy
             # for which the fermi likelihood scan was performed
-            if self._ref_energy is not None:
-                amplitude *= (self._ref_energy / reference) ** -index
+            #if self._ref_energy is not None:
+                #amplitude *= (self._ref_energy / reference) ** -index
 
-            cutoff = 1. / self.models['casc'].parameters['lambda_'].quantity.to("TeV-1").value
+            #cutoff = 1. / self.models['casc'].parameters['lambda_'].quantity.to("TeV-1").value
 
-            self._llh_fermi = -2. * self._llh_fermi_interp([cutoff, index, np.log10(amplitude)])[0]
+            ##self._llh_fermi = -2. * self._llh_fermi_interp([cutoff, index, np.log10(amplitude)])[0]
+
+            self.get_llh_fermi()
 
             log_like += self._llh_fermi
 

@@ -13,7 +13,7 @@ from gammapy.modeling.models import (
     EBLAbsorptionNormSpectralModel
 )
 from gammapy.modeling import Fit
-from gammapy.estimators import FluxPointsEstimator
+from gammapy.estimators import FluxPointsEstimator, FluxPoints
 from astropy.convolution import Gaussian2DKernel
 from astropy import units as u
 from simCRpropa.cascmaps import CascMap
@@ -190,15 +190,16 @@ def perform_casc_fit(config, geom, ps_model, llh, dataset,
                                      )
     # Plot the total model
     if plot:
+        energy_power = 2
         fig = plt.figure(dpi=150)
         ax = fig.add_subplot(111)
 
         e_range = [1e-3, 10.] * u.TeV
         casc_spec.add_primary = True
-        casc_spec.plot(ax=ax, energy_range=e_range, energy_power=2)
-        ps_model.spectral_model.plot(ax=ax, energy_range=e_range, energy_power=2)
+        casc_spec.plot(ax=ax, energy_range=e_range, energy_power=energy_power)
+        ps_model.spectral_model.plot(ax=ax, energy_range=e_range, energy_power=energy_power)
         casc_spec.add_primary = False
-        casc_spec.plot(ax=ax, energy_range=e_range, energy_power=2)
+        casc_spec.plot(ax=ax, energy_range=e_range, energy_power=energy_power)
         casc_spec.add_primary = True
         plt.ylim(1e-15, 3e-12)
 
@@ -238,13 +239,13 @@ def perform_casc_fit(config, geom, ps_model, llh, dataset,
 
         # plot a likelihood surface
         # choose a slice in cut off energy
-        cut_id = 1
+        cut_id = 0
         # build a grid of indices and norms
         ii, nn = np.meshgrid(llh._params["Index"], llh.log_norm_array, indexing='ij')
         # plot the log likehood grid
         dlogl = 2. * (llh._llh_grid[cut_id] - llh._llh_grid[cut_id].max())
 
-        vmin = -10.
+        vmin = -100.
         # check if most points have higher dlogl,
         # and if so, adjust color scaling
         if dlogl[dlogl > vmin].size < 10:
@@ -282,10 +283,21 @@ def perform_casc_fit(config, geom, ps_model, llh, dataset,
                                                       )
                                    )
     logging.info(f"Parameters after fit:\n{casc_model.parameters.to_table()}")
+    logging.info(f"Total stat after fit {fit_result_casc.total_stat}")
+    logging.info(f"Fermi logl after fit {prior_stack.llh_fermi}")
+
     # plot the flux points
     if plot:
         fig = plt.figure(dpi=150)
         ax = flux_points.plot(energy_power=2., label='data', marker='o')
+        if not casc_model.parameters['bias'].value == 0.:
+            fp = flux_points.table.copy()
+            fp['e_ref'] *= 1. + casc_model.parameters['bias'].value
+            fp['e_min'] *= 1. + casc_model.parameters['bias'].value
+            fp['e_max'] *= 1. + casc_model.parameters['bias'].value
+            fp_rescale = FluxPoints(fp)
+            fp_rescale.plot(ax = ax, energy_power=2., label='data rescaled', marker='o', color='green')
+
 
         # plot the final model
         e_range = [1e-3, 10.] * u.TeV
@@ -295,7 +307,7 @@ def perform_casc_fit(config, geom, ps_model, llh, dataset,
         casc_model.spectral_model.plot_error(ax=ax, energy_range=e_range, energy_power=2)
         # point source
         obs_model = casc_model.spectral_model.intrinsic_spectral_model * casc_model.spectral_model.ebl
-        obs_model.plot(ax=ax, energy_range=e_range, energy_power=2, label='Point source', color='k', ls='--')
+
 
         # cascade
         casc_model.spectral_model.add_primary = False
@@ -306,6 +318,24 @@ def perform_casc_fit(config, geom, ps_model, llh, dataset,
                                        color='k',
                                        ls='-.')
         casc_model.spectral_model.add_primary = True
+
+        if casc_model.parameters['bias'].value == 0.:
+            obs_model.plot(ax=ax, energy_range=e_range, energy_power=2, label='Point source', color='k', ls='--')
+        else:
+            casc_model.parameters['bias'].value = 0.
+            obs_model.plot(ax=ax, energy_range=e_range, energy_power=2, label='Point source', color='green', ls='--')
+            casc_model.spectral_model.plot(ax=ax, energy_range=e_range, energy_power=2, label='Total, bias = 0', color='green', ls=':')
+
+            # cascade
+            casc_model.spectral_model.add_primary = False
+            casc_model.spectral_model.plot(ax=ax,
+                                           energy_range=e_range,
+                                           energy_power=2,
+                                           label='Cascade',
+                                           color='green',
+                                           ls='-.')
+            casc_model.spectral_model.add_primary = True
+            pass
 
         # fermi SED
         SEDPlotter.plot_sed(sed, ax=ax, ms=6.,
@@ -320,8 +350,11 @@ def perform_casc_fit(config, geom, ps_model, llh, dataset,
                             label="Fermi",
                             flux_unit='TeV cm-2 s-1',
                             energy_unit='TeV',
-                            print_name=False
+                            print_name=False,
+                            # apply bias to fermi data, in fit it's the other way around
+                            #bias=casc_model.parameters['bias'].value
                             )
+
 
         ax.legend(loc='lower center')
         plt.ylim(3e-15, 2e-10)
@@ -329,7 +362,54 @@ def perform_casc_fit(config, geom, ps_model, llh, dataset,
         fig.savefig(f"plots/final_fits_{src:s}_b{B}.png")
         plt.close("all")
 
-    return prior_stack.llh_fermi, fit_result_casc.total_stat
+    # plot a likelihood surface for best cut value
+    if plot:
+        par_amp = prior_stack.models['casc'].parameters['amplitude']
+        amp = np.logspace(np.log10(par_amp.value) - 1., np.log10(par_amp.value) + .5, 100)
+        amp *= par_amp.unit
+
+        par_idx = prior_stack.models['casc'].parameters['index']
+        idx = np.linspace(par_idx.value - .5, par_idx.value + 1., 120)
+        idx *= par_idx.unit
+        ii, aa = np.meshgrid(idx, amp, indexing='ij')
+        c_stat = prior_stack.get_llh_fermi(amplitude=aa.reshape(-1), index=ii.reshape(-1), set_attribute=False).reshape(aa.shape)
+        #ii, nn = np.meshgrid(idx, llh.log_norm_array, indexing='ij')
+        #c_stat = np.zeros((idx.shape[0], amp.shape[0]))
+        #for i, iidx in enumerate(idx):
+            #for j, a in enumerate(amp):
+                #c_stat[i,j] = prior_stack.get_llh_fermi(amplitude=a, index=iidx, set_attribute=False)
+        #c_stat = np.zeros((idx.shape[0], llh.log_norm_array.shape[0]))
+        #for i, iidx in enumerate(idx.value):
+        #    for j, log_norm in enumerate(llh.log_norm_array):
+        #        c_stat[i,j] = prior_stack.get_llh_fermi(amplitude=10.**log_norm * u.Unit('MeV-1 s-1 cm-2'),
+        #                                                index=iidx * u.dimensionless_unscaled,
+        #                                                set_attribute=False,
+        #                                                reference=prior_stack._ref_energy * u.MeV)
+        d_cstat = 2. * (c_stat - c_stat.min())
+
+        fig = plt.figure(dpi=150)
+        ax = fig.add_subplot(111)
+
+        vmin = 0.
+        vmax = 300.
+
+        im = ax.pcolormesh(ii.value, np.log10(aa.value), d_cstat, cmap=cmap_name, vmin=vmin, vmax=vmax)
+        #im = ax.pcolormesh(ii, nn, d_cstat, cmap=cmap_name, vmin=vmin, vmax=vmax)
+        ax.annotate("$E_\mathrm{{cut}} = {0:.2f}$TeV, $B={1:.2e}$G".format(1. / prior_stack.models['casc'].parameters['lambda_'].value, B),
+                    xy=(0.05, 0.95), xycoords='axes fraction', color='k', va='top',
+                    fontsize='x-large'
+                    )
+        plt.colorbar(im, label='$-2\Delta\ln\mathcal{L}$')
+        ax.plot(par_idx.value, np.log10(par_amp.value), ms=10., marker='*', mec='k')
+        ax.tick_params(direction='out')
+        plt.xlabel("$\Gamma$")
+        plt.ylabel("$\log_{10}(N_\mathrm{H.E.S.S.}) = \log_{10}((E_{0,{Fermi}} / E_{0,\mathrm{H.E.S.S.}})^{-\Gamma}N_{Fermi})$", fontsize='medium')
+        plt.grid(color='0.7', ls=':')
+        plt.subplots_adjust(bottom=0.2, left=0.2)
+        fig.savefig("plots/{0:s}_lnl_fermi_interp_B{1}.png".format(src, B))
+        plt.close("all")
+
+    return prior_stack, prior_stack.llh_fermi, fit_result_casc.total_stat
 
 if __name__ == '__main__':
     usage = "usage: %(prog)s --conf config.yaml"
@@ -452,6 +532,7 @@ if __name__ == '__main__':
 
         # save fit point source fit result
         stat_results_ps[src] = fit_result_ps.total_stat
+        logging.info(f"Total stat of point source fit: {fit_result_ps.total_stat}")
 
         # compute flux points
         e_min, e_max = dataset_stack[0].energy_range[0].value, 15.
@@ -465,9 +546,10 @@ if __name__ == '__main__':
         if args.plots:
             fig = plt.figure(dpi=150)
             ax = fig.add_subplot(111)
-            flux_points.plot(ax=ax, energy_power=2.)
-            ps_model.spectral_model.plot(ax=ax, energy_range=[e_min, e_max] * u.TeV, energy_power=2)
-            ps_model.spectral_model.plot_error(ax=ax, energy_range=[e_min, e_max] * u.TeV, energy_power=2.)
+            energy_power = 2
+            flux_points.plot(ax=ax, energy_power=energy_power)
+            ps_model.spectral_model.plot(ax=ax, energy_range=[e_min, e_max] * u.TeV, energy_power=energy_power)
+            ps_model.spectral_model.plot_error(ax=ax, energy_range=[e_min, e_max] * u.TeV, energy_power=energy_power)
             ax.grid()
             fig.savefig(f"plots/{src:s}_ebl_epl.png")
             plt.close("all")
@@ -481,13 +563,20 @@ if __name__ == '__main__':
 
                 ds = dataset_stack[0].copy()
 
-                llh_fermi, llh_combined = perform_casc_fit(config, geom, ps_model, llh, ds,
-                                                           on_radius=on_radius, B=B, plot=args.plots)
+                dataset, llh_fermi, llh_combined = perform_casc_fit(config, geom, ps_model, llh, ds,
+                                                                    on_radius=on_radius, B=B, plot=args.plots)
 
                 # save total stat results
                 stat_results[src][ib] = llh_combined
                 stat_results_tot[ib] += llh_combined
                 stat_results_fermi_only[src][ib] = llh_fermi
+
+                # save best fit parameters
+                pars_out_file = os.path.join(outdir, f"best_fit_pars_{src:s}_B{B:.2e}_fix_bias{config['global']['fix_bias']}.fits")
+                dataset.models.parameters.to_table().write(pars_out_file, overwrite=True)
+
+                pars_out_file = os.path.join(outdir, f"best_fit_pars_{src:s}_B{B:.2e}_fix_bias{config['global']['fix_bias']}.fits")
+                dataset.models.parameters.to_table().write(pars_out_file, overwrite=True)
 
             logging.info(f"Saving result for source {src:s}")
             np.savez(os.path.join(outdir, f"{src:s}.npz"),
