@@ -299,7 +299,7 @@ if __name__ == '__main__':
                              xy=(0.05,0.95), xycoords='axes fraction', color='w', va='top',
                              fontsize='x-large'
                              )
-                ax.colorbar(im, label='$\ln\mathcal{L}$')
+                plt.colorbar(im, label='$\ln\mathcal{L}$')
                 ax.tick_params(direction='out')
                 plt.xlabel("$\Gamma$")
                 plt.ylabel("$\log_{10}(N)$")
@@ -383,7 +383,7 @@ if __name__ == '__main__':
             stat_results['tot'][ib] += fit_result_casc.total_stat
             stat_results[src + "_fermi_only"][ib] = prior_stack.llh_fermi
 
-   np.save(stat_results, config['outifle'])
+    np.save(stat_results, config['outifle'])
 
 # TODO
 #  - make sure that bias implementation is correct
