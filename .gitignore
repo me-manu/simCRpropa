@@ -3,6 +3,10 @@ tests/__pycache__/
 __pycache__/
 *.py[cod]
 *$py.class
+*.png
+*.fits
+
+sandbox/
 
 # C extensions
 *.so

@@ -26,6 +26,8 @@ from astropy.coordinates import Angle
 from simCRpropa.fermiinterp import LogLikeCubeFermi
 from myplot.spectrum import SEDPlotter
 from matplotlib.colors import LinearSegmentedColormap
+from scipy.interpolate import UnivariateSpline
+from scipy.special import gammaincinv
 
 
 def convert(data):
@@ -61,12 +63,16 @@ cm = LinearSegmentedColormap.from_list(
         cmap_name, colors, N=200)
 plt.register_cmap(cmap=cm)
 
-def plot_likelihood_vs_B(config, select_source=None, skip_sources=[]):
+def plot_likelihood_vs_B(config, select_source=None, skip_sources=[], simple_title=False, cmap=plt.cm.Set2, conf_level=0.95, dof=1):
     # loop through the sources:
 
     outdir = os.path.join(config['global']['outdir'], "tmax{0:.1e}".format(config['global']['tmax']))
     results = {}
     src_names = [] 
+
+    # load the fermi combined cube in order to get the likelihood without halo 
+    # as a proxy for a high B field
+    llh_fermi = np.load(config['llh_fermi_file'], allow_pickle=True, encoding="latin1").flat[0])
 
     for src in config.keys():
         if src == 'global':
@@ -99,30 +105,51 @@ def plot_likelihood_vs_B(config, select_source=None, skip_sources=[]):
     b_fields = config['global']['b_fields']
 
     # likelihoods for each source
+    b_vals = np.linspace(np.log10(np.min(b_fields)), np.log10(np.max(b_fields)), 50)
+    tot_stat_interp = np.zeros_like(b_vals)
+
+    # loop over sources
     for i, ts in enumerate(tot_stat):
-        plt.semilogx(b_fields, ts - ts.min(), label=src_names[i])
+        interp = UnivariateSpline(np.log10(b_fields), ts, k=2, s=0)
+        tot_stat_interp += interp(b_vals)
+
+    #    plt.semilogx(b_fields, ts - ts.min(), label=src_names[i], ls='--')
+        plt.semilogx(10.**b_vals, interp(b_vals) - interp(b_vals).min(), label=src_names[i], color=cmap(i / float(len(b_fields))))
     
     summed_ts = np.sum(tot_stat, axis=0) - np.sum(tot_stat, axis=0).min()
-    plt.semilogx(b_fields, summed_ts, label="Summed", lw=2, color="k")
-    
+    #plt.semilogx(b_fields, summed_ts, label="Summed", lw=2, color="k", ls='--')
+    delta_ts = tot_stat_interp - tot_stat_interp.min()
+    plt.semilogx(10.**b_vals, delta_ts, label="Summed", lw=2, color="k")
+
+    # find the limit
+    idx = np.where(delta_ts == 0)[0][0]  # interpolation up to minimum
+    thrlim = 2. * gammaincinv(0.5 * dof, 1. - 2. * (1. - conf_level))
+    roots = UnivariateSpline(b_vals[:idx], delta_ts[:idx] - thrlim, k=3, s=0)
+    logging.info("{0:.2f}% confidence level = Delta TS = {1:.2f} lower limit on B: {2} G".format(conf_level, thrlim, np.power(10., roots.roots())))
+    plt.axhline(thrlim, ls='--', color="0.5", lw=2)
+
     t_max_power = np.floor(np.log10(config['global']['tmax']))
     t_max_base = config['global']['tmax'] / 10.**t_max_power
-    title = r"$t_\mathrm{{max}}$ = {0:.2f}$\times10^{{{1:.0f}}}$ yrs, $\theta_\mathrm{{obs}} = {2:.1f}^\circ$, $\phi = {3:.1f}^\circ$".format(
-                t_max_base, t_max_power, 0., config['global']['rotation'])
+    if simple_title:
+        title = r"$t_\mathrm{{max}} = 10^{{{0:.0f}}}$ yrs".format(
+                    t_max_power)
+    else:
+        title = r"$t_\mathrm{{max}}$ = {0:.2f}$\times10^{{{1:.0f}}}$ yrs, $\theta_\mathrm{{obs}} = {2:.1f}^\circ$, $\phi = {3:.1f}^\circ$".format(
+                    t_max_base, t_max_power, 0., config['global']['rotation'])
 
     ax = plt.gca()
-    ax.axhline(2.71, ls='--', color='k', lw=2)
     ax.set_ylim(-.5, 15.)
-    ax.grid(which="both")
+    ax.grid(which="both", color="0.9")
     ax.legend(title=title, fontsize='x-small', ncol=3)
     ax.set_xlabel("$B$-field strength (G)")
     ax.set_ylabel("$-2\Delta\ln\mathcal{L}$")
+    plt.tight_layout()
 
     return ax
 
 
 def perform_casc_fit(config, geom, ps_model, llh, dataset,
-                     on_radius=Angle("0.07 deg"), B=1e-16, plot=False):
+                     on_radius=Angle("0.07 deg"), B=1e-16, initial_bias=0., plot=False):
     """
     Perform the combined cascade fit
 
@@ -140,14 +167,17 @@ def perform_casc_fit(config, geom, ps_model, llh, dataset,
     on_radius: `~astropy.coordinates.Angle` object
         Radius of ON region of IACT analysis
 
-    ps_model: `gammapy.model.modeling.models` object
-        Assumed point source model
+    ps_model: `gammapy.model.modeling.models.spectral` object
+        Assumed point source spectral model for the intrinsic spectrum
 
     llh: `simCRpropa.fermiinterp.LogLikeCubeFermi`
         Interpolated Fermi likelihood cube
 
     dataset: `~gammapy.datasets.SpectrumOnOffDataset`
         The IACT data set
+
+    initial_bias: float
+        initial value for the energy bias (default: 0)
 
     plot: bool
         If true, generate diagnostic plots
@@ -180,7 +210,8 @@ def perform_casc_fit(config, geom, ps_model, llh, dataset,
     # use the best fit model for the intrinsic spectrum
     logging.info("Initializing cascade model ...")
     casc_spec = CascadeSpectralModel(casc_1d,
-                                     ps_model.spectral_model.model1.copy(),
+                                     #ps_model.spectral_model.model1.copy(),
+                                     ps_model.copy(),
                                      ebl, on_region,
                                      rotation=config['global']['rotation'] * u.deg,
                                      tmax=config['global']['tmax'] * u.yr,
@@ -197,7 +228,8 @@ def perform_casc_fit(config, geom, ps_model, llh, dataset,
         e_range = [1e-3, 10.] * u.TeV
         casc_spec.add_primary = True
         casc_spec.plot(ax=ax, energy_range=e_range, energy_power=energy_power)
-        ps_model.spectral_model.plot(ax=ax, energy_range=e_range, energy_power=energy_power)
+        ps_model_combined = ps_model * ebl
+        ps_model_combined.plot(ax=ax, energy_range=e_range, energy_power=energy_power)
         casc_spec.add_primary = False
         casc_spec.plot(ax=ax, energy_range=e_range, energy_power=energy_power)
         casc_spec.add_primary = True
@@ -221,9 +253,10 @@ def perform_casc_fit(config, geom, ps_model, llh, dataset,
     casc_model.parameters['lambda_'].max = 1. / llh.params['Cutoff'].min()
     casc_model.parameters['lambda_'].frozen = config['global']['fix_cutoff']
     # bias between Fermi and HESS
-    casc_model.parameters['bias'].value = 0.
+    casc_model.parameters['bias'].value = initial_bias
     casc_model.parameters['bias'].frozen = config['global']['fix_bias']
     logging.info(f"Initial parameters:\n{casc_model.parameters.to_table()}")
+
     # interpolate the fermi likelihood for the right B field
     # TODO: changes necessary if more than one coherence length or theta jet used
     idb = np.where(llh.params["B"] == B)[0][0]
@@ -322,6 +355,7 @@ def perform_casc_fit(config, geom, ps_model, llh, dataset,
         if casc_model.parameters['bias'].value == 0.:
             obs_model.plot(ax=ax, energy_range=e_range, energy_power=2, label='Point source', color='k', ls='--')
         else:
+            bias_value = casc_model.copy().parameters['bias'].value
             casc_model.parameters['bias'].value = 0.
             obs_model.plot(ax=ax, energy_range=e_range, energy_power=2, label='Point source', color='green', ls='--')
             casc_model.spectral_model.plot(ax=ax, energy_range=e_range, energy_power=2, label='Total, bias = 0', color='green', ls=':')
@@ -335,7 +369,8 @@ def perform_casc_fit(config, geom, ps_model, llh, dataset,
                                            color='green',
                                            ls='-.')
             casc_model.spectral_model.add_primary = True
-            pass
+            # reset bias
+            casc_model.parameters['bias'].value = bias_value
 
         # fermi SED
         SEDPlotter.plot_sed(sed, ax=ax, ms=6.,
@@ -418,7 +453,7 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--conf', required=True)
     parser.add_argument('--select-source')
     parser.add_argument('--select-bfield', type=float)
-    parser.add_argument('--plots', action="store_true", help="Create plots")
+    parser.add_argument('--plots', action="store_true", help="Create diagnostic plots")
     parser.add_argument('--overwrite', action="store_true", help="Overwrite result files")
 
     args = parser.parse_args()
@@ -456,6 +491,13 @@ if __name__ == '__main__':
         if args.select_source is not None:
             if not src == args.select_source:
                 continue
+
+        # delete casc model for next source
+        # in order to start with correct initial parameters 
+        try:
+            del dataset
+        except NameError:
+            pass
 
         logging.info(f" ====== {src} ======= ")
 
@@ -556,39 +598,59 @@ if __name__ == '__main__':
 
         # loop over magnetic fields
         if not os.path.exists(os.path.join(outdir, f"{src:s}.npz")) or args.overwrite:
-            for ib, B in enumerate(b_fields):
+            for ib, B in enumerate(b_fields[::-1]):  # start with largest field, closest to point source case
+
+                try:  # re use best-fit parameters from fit before
+                    intrinsic_model = dataset.models[0].spectral_model.intrinsic_spectral_model.copy()
+                    initial_bias = dataset.models[0].spectral_model.parameters['bias'].value
+                except NameError:  # start with best fit parameters from point source fit from IACT
+                    intrinsic_model = ps_model.spectral_model.model1.copy()  # intrinsic model from TeV fit
+                    initial_bias = 0.
+
                 if args.select_bfield is not None:
                     if not B == args.select_bfield:
                         continue
 
                 ds = dataset_stack[0].copy()
 
-                dataset, llh_fermi, llh_combined = perform_casc_fit(config, geom, ps_model, llh, ds,
-                                                                    on_radius=on_radius, B=B, plot=args.plots)
+                dataset, llh_fermi, llh_combined = perform_casc_fit(config,
+                                                                    geom,
+                                                                    intrinsic_model,
+                                                                    llh,
+                                                                    ds,
+                                                                    on_radius=on_radius,
+                                                                    B=B,
+                                                                    initial_bias=initial_bias,
+                                                                    plot=args.plots)
 
                 # save total stat results
-                stat_results[src][ib] = llh_combined
-                stat_results_tot[ib] += llh_combined
-                stat_results_fermi_only[src][ib] = llh_fermi
+                stat_results[src][len(b_fields) - 1 - ib] = llh_combined
+                stat_results_tot[len(b_fields) - 1 - ib] += llh_combined
+                stat_results_fermi_only[src][len(b_fields) - 1 - ib] = llh_fermi
 
                 # save best fit parameters
                 pars_out_file = os.path.join(outdir, f"best_fit_pars_{src:s}_B{B:.2e}_fix_bias{config['global']['fix_bias']}.fits")
                 dataset.models.parameters.to_table().write(pars_out_file, overwrite=True)
 
-                pars_out_file = os.path.join(outdir, f"best_fit_pars_{src:s}_B{B:.2e}_fix_bias{config['global']['fix_bias']}.fits")
-                dataset.models.parameters.to_table().write(pars_out_file, overwrite=True)
-
-            logging.info(f"Saving result for source {src:s}")
-            np.savez(os.path.join(outdir, f"{src:s}.npz"),
-                     combined=stat_results[src],
-                     fermi_only=stat_results_fermi_only[src],
-                     ps=stat_results_ps[src])
+            if args.select_bfield is None:  # only save if all B fields are computed 
+                logging.info(f"Saving result for source {src:s}")
+                np.savez(os.path.join(outdir, f"{src:s}.npz"),
+                         combined=stat_results[src],
+                         fermi_only=stat_results_fermi_only[src],
+                         ps=stat_results_ps[src])
         else:
             res = np.load(os.path.join(outdir, f"{src:s}.npz"), allow_pickle=True)
             stat_results_tot += res['combined']
 
-    logging.info("Saving total result")
-    np.save(os.path.join(outdir, "tot.npy"), stat_results_tot)
+    if not os.path.exists(os.path.join(outdir, f"tot.npy")) or args.overwrite:
+        if args.plots:
+            plot_likelihood_vs_B(config)  # plot the likelihood profile
+            plt.savefig("plots/lnl_vs_B_tmax{tmax:.0e}_fix-bias{fix_bias:b}.png".format(**config['global']),
+                        dpi=150)
+            plt.close("all")
+        if args.select_bfield is None and args.select_source is None:  # only save if all B fields and sources are computed
+            logging.info("Saving total result")
+            np.save(os.path.join(outdir, "tot.npy"), stat_results_tot)
 
 # TODO
 #  - make sure that bias implementation is correct
