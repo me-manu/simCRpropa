@@ -4,7 +4,7 @@ import yaml
 import numpy as np
 import argparse
 from os import path
-from fermiAnalysis.batchfarm import utils,lsf
+from fermiAnalysis.batchfarm import utils, lsf, sdf
 from copy import deepcopy
 from glob import glob
 from astropy.table import Table
@@ -12,11 +12,38 @@ from astropy.io import fits
 from astropy import units as u
 from astropy import constants as c
 import simCRpropa
+import socket
 from simCRpropa import collect
 from collections import OrderedDict
 import h5py
 
-def initRandomField(vgrid, Bamplitude, seed = 0):
+@lsf.setLsf
+def _submit_run_lsf(script, config, option, njobs, **kwargs):
+    """Submit jobs to LSF (old) cluster using bsub"""
+    kwargs.setdefault('span', "span[ptile={:n}]".format(kwargs['n']))
+    option += " -b lsf"
+    lsf.submit_lsf(script,
+                   config,
+                   option,
+                   njobs, 
+                   **kwargs)
+
+@sdf.set_sdf
+def _submit_run_sdf(script, config, option, njobs, **kwargs):
+    """Submit jobs to SDF cluster using slurm"""
+    kwargs['ntasks_per_node'] = kwargs['n']
+    if kwargs['n'] > 1 and kwargs['mem'] is None:
+        kwargs['mem'] = 4000 * kwargs['n']
+
+    option += " -b sdf"
+    sdf.submit_sdf(script,
+                   config,
+                   option,
+                   njobs, 
+                   **kwargs)
+
+
+def initRandomField(vgrid, Bamplitude, seed=0):
     np.random.seed(seed)
     gridArray = vgrid.getGrid()
     nx = vgrid.getNx()
@@ -249,7 +276,7 @@ class SimCRPropa(object):
                     == type(self.Simulation['Nbatch']):
                 raise TypeError("Emin, Emax, and Nbatch must be the same type")
 
-            if type(self.Source['Emin']) == float or type(self.Source['Emin']) == np.float:
+            if type(self.Source['Emin']) == float:
                 self.EeVbins = np.logspace(np.log10(self.Source['Emin']),
                     np.log10(self.Source['Emax']), self.Source['Esteps'])
                 self.weights = self.Simulation['Nbatch'] * \
@@ -302,7 +329,12 @@ class SimCRPropa(object):
 
     def setOutput(self,jobid, idB=0, idL=0, it=0, iz=0):
         """Set output file and directory"""
-        self.OutName = 'casc_{0:05n}.dat'.format(jobid)
+        if self.Simulation.get('outputtype', 'ascii') == 'ascii':
+            self.OutName = 'casc_{0:05n}.dat'.format(jobid)
+        elif self.Simulation.get('outputtype', 'ascii') == 'hdf5':
+            self.OutName = 'casc_{0:05n}.hdf5'.format(jobid)
+        else:
+            raise ValueError("unknown output type chosen")
 
         self.Source['th_jet'] = self._th_jetList[it]
         self.Source['z'] = self._zList[iz]
@@ -348,26 +380,38 @@ class SimCRPropa(object):
         """Set up simulation volume and magnetic field"""
         boxOrigin = Vector3d(0, 0, 0)
         boxSpacing = self.Bfield['boxSize'] * Mpc / self.Bfield['NBgrid']
+        logging.info('Box spacing for B field: {0:.3e} Mpc'.format(boxSpacing / Mpc))
 
         if self.Bfield['type'] == 'turbulence':
-            logging.info('Box spacing for B field: {0:.3e} Mpc'.format(boxSpacing / Mpc))
-            vgrid = Grid3f(boxOrigin,
-                           self.Bfield['NBgrid'],
-                           boxSpacing)
-            initTurbulence(vgrid, self.Bfield['B'] * gauss, 
-                            2 * boxSpacing, 
-                            self.Bfield['maxTurbScale'] * Mpc, 
-                            self.Bfield['turbIndex'],
-                            self.Bfield['seed'])
-            bField0 = MagneticFieldGrid(vgrid)
-            self.bField = PeriodicMagneticField(bField0,
-                    Vector3d(self.Bfield['periodicity']* Mpc), Vector3d(0), False)
+            print(2. * boxSpacing / Mpc, self.Bfield['maxTurbScale'])
+            turbSpectrum = SimpleTurbulenceSpectrum(self.Bfield['B'] * gauss,  # Brms
+                                                    2. * boxSpacing,  #lMin
+                                                    self.Bfield['maxTurbScale'] * Mpc,  #lMax
+                                                    self.Bfield['turbIndex'])  #sIndex)
+
+            gridprops = GridProperties(boxOrigin,
+                                       self.Bfield['NBgrid'],
+                                       boxSpacing)
+
+            self.bField = SimpleGridTurbulence(turbSpectrum, gridprops, self.Bfield['seed'])
+
+
+            #vgrid = Grid3f(boxOrigin,
+            #               self.Bfield['NBgrid'],
+            #               boxSpacing)
+            #initTurbulence(vgrid, self.Bfield['B'] * gauss, 
+            #                2 * boxSpacing, 
+            #                self.Bfield['maxTurbScale'] * Mpc, 
+            #                self.Bfield['turbIndex'],
+            #                self.Bfield['seed'])
+            #bField0 = MagneticFieldGrid(vgrid)
+            #self.bField = PeriodicMagneticField(bField0,
+            #        Vector3d(self.Bfield['periodicity']* Mpc), Vector3d(0), False)
+
             self.__extent = self.Bfield['boxSize'] * Mpc
             logging.info('B field initialized')
             logging.info('Lc = {0:.3e} kpc'.format(
-                turbulentCorrelationLength(2. * boxSpacing / Mpc * 1e3,
-                                        self.Bfield['maxTurbScale'] * 1e3,
-                                        self.Bfield['turbIndex'])))  # correlation length, input in kpc
+                self.bField.getCorrelationLength() / kpc))  # correlation length, input in kpc
 
         if self.Bfield['type'] == 'cell':
             logging.info('Box spacing for cell-like B field: {0:.3e} Mpc'.format(self.Bfield['maxTurbScale']))
@@ -384,7 +428,7 @@ class SimCRPropa(object):
                            gridSize,
                            gridSpacing)
 
-            initRandomField(vgrid, self.Bfield['B'] * gauss, seed = self.Bfield['seed'])
+            initRandomField(vgrid, self.Bfield['B'] * gauss, seed=self.Bfield['seed'])
             self.bField = MagneticFieldGrid(vgrid)
             self.__extent = int(np.ceil(redshift2ComovingDistance(self.Source['z'])/\
                                     self.Bfield['maxTurbScale'] / Mpc)) \
@@ -392,9 +436,14 @@ class SimCRPropa(object):
             logging.info('B field initialized')
 
 
+        #logging.info('vgrid extension: {0:.3e} Mpc'.format(self.__extent / Mpc))
+        #logging.info('<B^2> = {0:.3e} nG'.format((rmsFieldStrength(vgrid) / nG)))   # RMS
+        #logging.info('<|B|> = {0:.3e} nG'.format((meanFieldStrength(vgrid) / nG)))  # mean
+        #logging.info('B(10 Mpc, 0, 0)={0} nG'.format(self.bField.getField(Vector3d(10,0,0) * Mpc) / nG))
+
         logging.info('vgrid extension: {0:.3e} Mpc'.format(self.__extent / Mpc))
-        logging.info('<B^2> = {0:.3e} nG'.format((rmsFieldStrength(vgrid) / nG)))   # RMS
-        logging.info('<|B|> = {0:.3e} nG'.format((meanFieldStrength(vgrid) / nG)))  # mean
+        logging.info('<B^2> = {0:.3e} nG'.format(self.bField.getBrms() / nG))   # RMS
+        logging.info('<|B|> = {0:.3e} nG'.format(self.bField.getMeanFieldStrength() / nG))  # mean
         logging.info('B(10 Mpc, 0, 0)={0} nG'.format(self.bField.getField(Vector3d(10,0,0) * Mpc) / nG))
         return
 
@@ -423,8 +472,14 @@ class SimCRPropa(object):
         #ObserverTimeEvolution
 
         logging.info('Saving output to {0:s}'.format(self.outputfile))
-        self.output = TextOutput(self.outputfile,
-                                 Output.Event3D)
+        if self.Simulation.get('outputtype', 'ascii') == 'ascii':
+            self.output = TextOutput(self.outputfile,
+                                     Output.Event3D)
+        elif self.Simulation.get('outputtype', 'ascii') == 'hdf5':
+            self.output = HDF5Output(self.outputfile,
+                                     Output.Event3D)
+        else:
+            raise ValueError("unknown output type chosen")
 
         self.output.enable(Output.CurrentIdColumn)
         self.output.enable(Output.CurrentDirectionColumn)
@@ -520,11 +575,21 @@ class SimCRPropa(object):
     def _setup_emcascade(self):
         """Setup simulation module for electromagnetic cascade"""
         self.m = ModuleList()
-        #PropagationCK (ref_ptr< MagneticField > field=NULL, double tolerance=1e-4, double minStep=(0.1 *kpc), double maxStep=(1 *Gpc))
-        #self.m.add(PropagationCK(self.bField, 1e-2, 100 * kpc, 10 * Mpc))
-        self.m.add(PropagationCK(self.bField, self.Simulation['tol'],
-                                 self.Simulation['minStepLength'] * pc,
-                                 self.Simulation['maxStepLength'] * Mpc))
+
+
+        if self.Simulation.get('progation', 'CK') == 'CK':
+            #PropagationCK (ref_ptr< MagneticField > field=NULL, double tolerance=1e-4, double minStep=(0.1 *kpc), double maxStep=(1 *Gpc))
+            self.m.add(PropagationCK(self.bField, self.Simulation['tol'],
+                                     self.Simulation['minStepLength'] * pc,
+                                     self.Simulation['maxStepLength'] * Mpc))
+
+        elif self.Simulation.get('progation', 'CK') == 'BP':
+            # PropagationBP(ref_ptr<MagneticField> field, double tolerance, double minStep, double maxStep)
+            self.m.add(PropagationBP(self.bField, self.Simulation['tol'],
+                                     self.Simulation['minStepLength'] * pc,
+                                     self.Simulation['maxStepLength'] * Mpc))
+        else:
+            raise ValueError("unknown propagation module chosen")
 
         thinning = self.Simulation.get('thinning', 0.)
         # Updates redshift and applies adiabatic energy loss according to the traveled distance. 
@@ -534,11 +599,11 @@ class SimCRPropa(object):
         if self.Simulation.get('include_z_evol', True):
             self.m.add(FutureRedshift())
 
-        self.m.add(EMInverseComptonScattering(CMB, True, thinning))
+        self.m.add(EMInverseComptonScattering(CMB(), True, thinning))
         if self.Simulation.get('include_CMB', True):
             # this is a bit counter intuitive here, but I just want to 
             # make a comparison to all the other codes by excluding the EBL here
-            self.m.add(EMInverseComptonScattering(self._EBL, True, thinning))
+            self.m.add(EMInverseComptonScattering(self._EBL(), True, thinning))
         # EMPairProduction:  electron-pair production of cosmic ray photons 
         #with background photons: gamma + gamma_b -> e+ + e- (Breit-Wheeler process).
         # EMPairProduction(PhotonField photonField = CMB, bool haveElectrons = false,double limit = 0.1 ), 
@@ -546,16 +611,16 @@ class SimCRPropa(object):
         # EMInverComptonScattering(PhotonField photonField = CMB,bool havePhotons = false,double limit = 0.1 ), 
         #if havePhotons = True, photons are created
         # also availableL EMDoublePairProduction, EMTripletPairProduction
-        self.m.add(EMPairProduction(self._EBL, True, thinning))
+        self.m.add(EMPairProduction(self._EBL(), True, thinning))
         if self.Simulation.get('include_higher_order_pp', False):
-            self.m.add(EMDoublePairProduction(self._EBL, True, thinning))
-            self.m.add(EMTripletPairProduction(self._EBL, True, thinning))
+            self.m.add(EMDoublePairProduction(self._EBL(), True, thinning))
+            self.m.add(EMTripletPairProduction(self._EBL(), True, thinning))
 
         if self.Simulation.get('include_CMB', True):
-            self.m.add(EMPairProduction(CMB, True))
+            self.m.add(EMPairProduction(CMB(), True))
             if self.Simulation.get('include_higher_order_pp', False):
-                self.m.add(EMDoublePairProduction(CMB, True, thinning))
-                self.m.add(EMTripletPairProduction(CMB, True, thinning))
+                self.m.add(EMDoublePairProduction(CMB(), True, thinning))
+                self.m.add(EMTripletPairProduction(CMB(), True, thinning))
 
         # for photo-pion production: 
         #PhotoPionProduction (PhotonField photonField=CMB, bool photons=false, bool neutrinos=false, 
@@ -621,7 +686,7 @@ class SimCRPropa(object):
         self.m.add(FutureRedshift())
         if self.emcasc:
             #self.m.add(EMInverseComptonScattering(CMB, photons, limit)) # not activated in example notebook
-            #self.m.add(EMInverseComptonScattering(self._EBL, photons, limit)) # not activated in example notebook
+            #self.m.add(EMInverseComptonScattering(self._EBL(), photons, limit)) # not activated in example notebook
             # EMPairProduction:  electron-pair production of cosmic ray photons 
             #with background photons: gamma + gamma_b -> e+ + e- (Breit-Wheeler process).
             # EMPairProduction(PhotonField photonField = CMB, bool haveElectrons = false,double limit = 0.1 ), 
@@ -629,44 +694,44 @@ class SimCRPropa(object):
             # EMInverComptonScattering(PhotonField photonField = CMB,bool havePhotons = false,double limit = 0.1 ), 
             #if havePhotons = True, photons are created
             # also availableL EMDoublePairProduction, EMTripletPairProduction
-            #self.m.add(EMPairProduction(self._EBL, electrons, limit)) # not activated in example notebook
+            #self.m.add(EMPairProduction(self._EBL(), electrons, limit)) # not activated in example notebook
 
-            #self.m.add(EMPairProduction(CMB, electrons, limit)) # not activated in example notebook
+            #self.m.add(EMPairProduction(CMB(), electrons, limit)) # not activated in example notebook
 
-            self.m.add(EMInverseComptonScattering(CMB, photons, thinning))
-            self.m.add(EMInverseComptonScattering(self._URB, photons, thinning))
-            self.m.add(EMInverseComptonScattering(self._EBL, photons, thinning))
+            self.m.add(EMInverseComptonScattering(CMB(), photons, thinning))
+            self.m.add(EMInverseComptonScattering(self._URB(), photons, thinning))
+            self.m.add(EMInverseComptonScattering(self._EBL(), photons, thinning))
 
-            self.m.add(EMPairProduction(CMB, electrons, thinning))
-            self.m.add(EMPairProduction(self._URB, electrons, thinning))
-            self.m.add(EMPairProduction(self._EBL, electrons, thinning))
-            self.m.add(EMDoublePairProduction(CMB, electrons, thinning))
+            self.m.add(EMPairProduction(CMB(), electrons, thinning))
+            self.m.add(EMPairProduction(self._URB(), electrons, thinning))
+            self.m.add(EMPairProduction(self._EBL(), electrons, thinning))
+            self.m.add(EMDoublePairProduction(CMB(), electrons, thinning))
 
-            self.m.add(EMDoublePairProduction(self._URB, electrons, thinning))
-            self.m.add(EMDoublePairProduction(self._EBL, electrons, thinning))
+            self.m.add(EMDoublePairProduction(self._URB(), electrons, thinning))
+            self.m.add(EMDoublePairProduction(self._EBL(), electrons, thinning))
 
-            self.m.add(EMTripletPairProduction(CMB, electrons, thinning))
-            self.m.add(EMTripletPairProduction(self._URB, electrons, thinning))
-            self.m.add(EMTripletPairProduction(self._EBL, electrons, thinning))
+            self.m.add(EMTripletPairProduction(CMB(), electrons, thinning))
+            self.m.add(EMTripletPairProduction(self._URB(), electrons, thinning))
+            self.m.add(EMTripletPairProduction(self._EBL(), electrons, thinning))
 
         # for photo-pion production: 
         # PhotoPionProduction (PhotonField photonField=CMB, bool photons=false, bool neutrinos=false, 
         # bool electrons=false, bool antiNucleons=false, double limit=0.1, bool haveRedshiftDependence=false)
-        self.m.add(PhotoPionProduction(CMB, photons, neutrinos, electrons, antinucleons, limit, True))
-        self.m.add(PhotoPionProduction(self._EBL, photons, neutrinos, electrons, antinucleons, limit, True))
+        self.m.add(PhotoPionProduction(CMB(), photons, neutrinos, electrons, antinucleons, limit, True))
+        self.m.add(PhotoPionProduction(self._EBL(), photons, neutrinos, electrons, antinucleons, limit, True))
 
         # ElectronPairProduction (PhotonField photonField=CMB, bool haveElectrons=false, double limit=0.1)
         # Electron-pair production of charged nuclei with background photons. 
-        self.m.add(ElectronPairProduction(CMB, electrons, limit))
-        self.m.add(ElectronPairProduction(self._EBL, electrons, limit))
+        self.m.add(ElectronPairProduction(CMB(), electrons, limit))
+        self.m.add(ElectronPairProduction(self._EBL(), electrons, limit))
         if not self.Source['Composition'] == 2212: # protons don't decay or diseintegrate
             # for nuclear decay:
             #NuclearDecay (bool electrons=false, bool photons=false, bool neutrinos=false, double limit=0.1)
             self.m.add(NuclearDecay(electrons, photons, neutrinos))
             # for photo disentigration:
             #PhotoDisintegration (PhotonField photonField=CMB, bool havePhotons=false, double limit=0.1)
-            self.m.add(PhotoDisintegration(CMB, photons))
-            self.m.add(PhotoDisintegration(self._EBL, photons))
+            self.m.add(PhotoDisintegration(CMB(), photons))
+            self.m.add(PhotoDisintegration(self._EBL(), photons))
         # Synchrotron radiation: 
         #SynchrotronRadiation (ref_ptr< MagneticField > field, bool havePhotons=false, double limit=0.1) or 
         #SynchrotronRadiation (double Brms=0, bool havePhotons=false, double limit=0.1) ; 
@@ -712,10 +777,10 @@ class SimCRPropa(object):
         self._setup_break()
         return 
 
-    @lsf.setLsf
     def run(self,  overwrite=False, force_combine=False, overwrite_combine=False,
         **kwargs):
         """Submit simulation jobs"""
+        option = ""   # extra options passed to run crpropa sim script
 
         script = path.join(path.abspath(path.dirname(simCRpropa.__file__)), 'scripts/run_crpropa_em_cascade.py')
         print (script)
@@ -740,7 +805,6 @@ class SimCRPropa(object):
                         missing = utils.missing_files(outfile,njobs, split = '.hdf5')
                         self.config['Simulation']['n_cpu'] = kwargs['n']
 
-
                         if len(missing) < njobs:
                             logging.debug('here {0}'.format(njobs))
                             njobs = missing
@@ -754,9 +818,20 @@ class SimCRPropa(object):
                             kwargs['jname'] = 'b{0:.2f}l{1:.2f}th{2:.2f}z{3:.3f}'.format(np.log10(b), np.log10(l), t, z)
                             kwargs['log'] = path.join(kwargs['logdir'], kwargs['jname'] + ".out")
                             kwargs['err'] = path.join(kwargs['logdir'], kwargs['jname'] + ".err")
-                            lsf.submit_lsf(script,
-                                self.config,'',njobs, 
-                                **kwargs)
+
+                            # submit job to either to lsdf or sdf
+                            if 'sdf' in socket.gethostname():
+                                _submit_run_sdf(script,
+                                                self.config,
+                                                option,
+                                                njobs, 
+                                                **kwargs)
+                            else:
+                                _submit_run_lsf(script,
+                                                self.config,
+                                                option,
+                                                njobs, 
+                                                **kwargs)
                         else:
                             if len(missing) and force_combine:
                                 logging.info("There are files missing but combining anyways.")
@@ -778,24 +853,27 @@ def main(**kwargs):
     usage = "usage: %(prog)s"
     description = "Run the analysis"
     parser = argparse.ArgumentParser(usage=usage,description=description)
-    parser.add_argument('--conf', required = True)
-    parser.add_argument('--dry', default = 0, type = int)
-    parser.add_argument('--time', default = '09:59',help='Max time for lsf cluster job')
-    parser.add_argument('--n', default = 8,help='number of reserved cores', type=int)
-    parser.add_argument('--span', default = 'span[ptile=8]',help='spanning of jobs')
-    parser.add_argument('--concurrent', default = 0,help='number of max simultaneous jobs', type=int)
-    parser.add_argument('--sleep', default = 10,help='seconds to sleep between job submissions', type=int)
-    parser.add_argument('--overwrite', default = 0,help='overwrite existing combined files', type=int)
-    parser.add_argument('--overwrite_combine', default = 0,help='overwrite existing combined files', type=int)
-    parser.add_argument('--force_combine', default = 0,help='force the combination of files', type=int)
+    parser.add_argument('--conf', required=True)
+    parser.add_argument('--dry', default=0, action="store_true")
+    parser.add_argument('--time', default='09:59',help='Max time for lsf cluster job')
+    parser.add_argument('--n', default=8,help='number of reserved cores', type=int)
+    parser.add_argument('--span', default='span[ptile=8]',help='spanning of jobs on lsf cluster')
+    parser.add_argument('--concurrent', default=0,help='number of max simultaneous jobs', type=int)
+    parser.add_argument('--sleep', default=2, help='seconds to sleep between job submissions', type=int)
+    parser.add_argument('--overwrite', help='overwrite existing combined files', action="store_true")
+    parser.add_argument('--overwrite_combine', help='overwrite existing combined files', action="store_true")
+    parser.add_argument('--force_combine', help='force the combination of files', action="store_true")
     parser.add_argument('--resubmit-running-jobs', action="store_false", default=True, help='Resubmit jobs even if they are running')
+    parser.add_argument('--mem', help='mimimum requested memory in MB for SDF cluster', type=int)
     args = parser.parse_args()
+
     kwargs['dry'] = args.dry
     kwargs['time'] = args.time
     kwargs['concurrent'] = args.concurrent
     kwargs['sleep'] = args.sleep
     kwargs['n'] = args.n
     kwargs['span'] = args.span
+    kwargs['mem'] = args.mem
     kwargs['no_resubmit_running_jobs'] = args.resubmit_running_jobs
     
     utils.init_logging('DEBUG', color = True)
