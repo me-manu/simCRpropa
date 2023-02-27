@@ -550,10 +550,11 @@ class CascMap(object):
             (default: 0.02, motivated from minimum cta psf)
         ebins: int or array-like
             total number of bins of observed energy
-        lightcurve: None or float
-            if not None, then this is the maximum time in years of the light curve
+        lightcurve: None, float, or array-like
+            if float, then this is the maximum time in years of the light curve
             which will be binned according to resolution of simulation.
             Beware: this might result in a large number of time bins!
+            if array, then these are the light curve bins in years
         id_detection: int
             identifier for detected particles, following CERN MC scheme (22 = photons)
         """
@@ -718,7 +719,9 @@ class CascMap(object):
             edges['energy_true'] = ebins
 
         # phi
-        binsz *= u.deg / u.pixel
+        if int(gpv.split('.')[0]) < 1:
+            binsz *= u.deg / u.pixel  # only necessary for gpv < 1.
+
         if isinstance(width, u.Quantity):
             width = width.to("deg")
         else:
@@ -1319,8 +1322,9 @@ class ASmooth(object):
         for k in ["map", "scale", "significance"]:
             self._result[k] = self._input_map.copy()
 
-        self._result["scale"].unit = "deg"
-        self._result["significance"].unit = ""
+        if int(gpv.split('.')[0]) < 1:
+            self._result["scale"].unit = "deg"
+            self._result["significance"].unit = ""
 
         cubes = {}
 
