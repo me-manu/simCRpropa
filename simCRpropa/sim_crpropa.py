@@ -166,6 +166,10 @@ Simulation:
     Nbatch: 1.e+4 # number of particles simulated in each simulation
     cpu_n: 8
 
+Cosmology:
+    h: 0.7
+    Om: 0.3
+
 Source:
     z: 0.14 # source redshift, source position is at (D,0,0)
     Energy: 1.e+13 # energy of single particle in eV
@@ -280,7 +284,7 @@ class SimCRPropa(object):
                 self.EeVbins = np.logspace(np.log10(self.Source['Emin']),
                     np.log10(self.Source['Emax']), self.Source['Esteps'])
                 self.weights = self.Simulation['Nbatch'] * \
-                            np.ones(self.EeVbins.size - 1, dtype = np.int) # weight with optical depth?
+                            np.ones(self.EeVbins.size - 1, dtype = int) # weight with optical depth?
                 self.EeV = np.sqrt(self.EeVbins[1:] * self.EeVbins[:-1])
 
             elif type(self.Source['Emin']) == list or type(self.Source['Emin']) == tuple \
@@ -309,7 +313,7 @@ class SimCRPropa(object):
                 if self.Observer['obsAngle'] > 0.:
                     self.weights *= (1. + 0.1 * (self.Observer['obsAngle'] + 1.))
 
-            self.weights = self.weights.astype(np.int)
+            self.weights = self.weights.astype(int)
             self.nbins = self.EeV.size
             self.Source['Energy'] = self.EeV[0]
             logging.info("There will be {0:n} energy bins".format(self.nbins))
@@ -325,6 +329,9 @@ class SimCRPropa(object):
             logging.info("Set step length to {0:.4e} pc " \
                          "from requsted time resolution {1}".format(self.Simulation['minStepLength'],
                                                                     dt))
+        # set up cosmology
+        logging.info("Setting up cosmology with h={0[h]} and Omega_matter={0[Om]}".format(self.Cosmology))
+        setCosmologyParameters(self.Cosmology['h'], self.Cosmology['Om'])
         return
 
     def setOutput(self,jobid, idB=0, idL=0, it=0, iz=0):
