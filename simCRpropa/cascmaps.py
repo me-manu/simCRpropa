@@ -394,20 +394,25 @@ class CascMap(object):
         # get the time delay axis
         t_axis = self._m.geom.axes['t_delay']
 
-        if look_back_times is None or weights is None:
+        if weights is None:
             look_back_times = [0., self._tmax.to(t_axis.unit).value]
             weights = [1., 1.]
 
-        interp = interp1d(look_back_times, weights / np.mean(weights),
-                                  fill_value=0.,
-                                  bounds_error=False,
-                                  kind=interpolation_type
-                                  )
-        # interp weights over time delay axis
-        # TODO this should probably be replaced by oversampling, if interpolation is not nearest
+        elif look_back_times is not None and not weights.size == t_axis.center.size:
+            interp = interp1d(look_back_times, weights / np.mean(weights),
+                                      fill_value=0.,
+                                      bounds_error=False,
+                                      kind=interpolation_type
+                                      )
+            # interp weights over time delay axis
+            # TODO this should probably be replaced by oversampling, if interpolation is not nearest
 
-        # interpolate weights over the time axis of the cascade
-        weights_interp = interp(t_axis.center)
+            # interpolate weights over the time axis of the cascade
+            weights = interp(t_axis.center)
+
+        # apply weights directly to different time delays
+        else:
+            weights = weights
 
         # Now we want to calculate the average cascade flux received within some time Window T_obs
         # which we calculate through the integral
@@ -420,7 +425,7 @@ class CascMap(object):
         # \sum_i weights(t_i) K(t_i) \Delta t_i
         # this calculation is performed by the next two lines:
         self._casc_map = self._m * \
-                         weights_interp[:, np.newaxis, np.newaxis, np.newaxis, np.newaxis]
+                         weights[:, np.newaxis, np.newaxis, np.newaxis, np.newaxis]
 
         self._casc = self._casc_map.sum_over_axes(['t_delay'], keepdims=False)
         # self._casc now contains the time averaged flux
