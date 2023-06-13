@@ -383,6 +383,10 @@ class CascMap(object):
             where the flux in a time bin is the average counts collected in that bin. Use 'linear' if the weights
             are truly of differential type, e.g., when extracted from a radio light curve.
 
+        Returns
+        --------
+        tuple with time delays and corresponding weights
+
         Notes
         -----
         * If weights are None then they will be set such that they are constant up to the maximum
@@ -426,6 +430,7 @@ class CascMap(object):
         # self._casc now contains the time averaged flux
         # given some source history until now (t=0)
         logging.debug("... Done.")
+        return t_axis.center, weights_interp
 
     def sum_until_tmax(self):
         """
