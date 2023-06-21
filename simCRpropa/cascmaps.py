@@ -435,7 +435,7 @@ class CascMap(object):
         # self._casc now contains the time averaged flux
         # given some source history until now (t=0)
         logging.debug("... Done.")
-        return t_axis.center, weights_interp
+        return t_axis.center, weights
 
     def sum_until_tmax(self):
         """
