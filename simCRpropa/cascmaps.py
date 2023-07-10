@@ -1092,6 +1092,101 @@ class CascMap(object):
         # free up memory
         del wcs_map_export, map_export
 
+    def interpolate_spectrum(self,
+                             radius=None,
+                             on_region=None,
+                             energy_unit="GeV",
+                             dNdE_unit="TeV-1 cm-2 s-1",
+                             **kwargs
+                             ):
+        """
+        Compute a spline for spectral interpolation in log-log representation
+
+        Parameters
+        ----------
+        on_region: extraction region or None
+            region in which cascade is contribution is summed up
+        radius: str or None
+            if string, should be the angle of circular extraction region compatible with Angle, e.g., "0.1 deg".
+            Will overwrite on_region.
+
+        Returns
+        -------
+        tuple with spline and energies used for interpolation
+        """
+        kwargs.setdefault("k", 2)
+        kwargs.setdefault("s", 1e-4)
+        kwargs.setdefault("ext", r"extrapolate")
+
+        if radius is not None:
+            on_region = CircleSkyRegion(self._casc_obs.geom.center_skydir,
+                                        radius=Angle(radius))
+
+        spec_halo = self.get_obs_spectrum(
+            region=on_region
+        )
+
+        spec_tot = self.get_obs_spectrum(
+            region=on_region,
+            add_primary=True
+        )
+
+        energy_halo = spec_halo.geom.axes['energy_true']
+        energy_tot = spec_tot.geom.axes['energy_true']
+
+        flux_unit_conversion = spec_halo.quantity.unit.to(dNdE_unit)
+
+        x = np.log10(energy_halo.center.to(energy_unit).value)
+        y = (spec_halo.data[:, 0, 0] * flux_unit_conversion)
+        y[y == 0.] = 1e-60
+        y = np.log10(y)
+
+        spline = UnivariateSpline(x, y, **kwargs)
+
+        return spline, energy_halo.center.to(energy_unit)
+
+    def integrate_casc_spec(self,
+                            energy_edges,
+                            power=0,
+                            x_steps=100,
+                            radius=None,
+                            on_region=None,
+                            energy_unit="GeV",
+                            dNdE_unit="TeV-1 cm-2 s-1",
+                            **kwargs
+                            ):
+        """
+        Integrate the cascade spectrum between energy edges from spline interpolation
+
+        Parameters
+        ----------
+        :param radius:
+        :param on_region:
+        :param energy_unit:
+        :param dNdE_unit:
+        :param kwargs:
+
+        Return
+        ------
+        The integral within energy edges
+        """
+        spline, energies = self.interpolate_spectrum(radius=radius,
+                                                     energy_unit=energy_unit,
+                                                     dNdE_unit=dNdE_unit,
+                                                     **kwargs)
+
+        integral = np.zeros(energy_edges.size - 1)
+        for i, x in enumerate(energy_edges[:-1].to(energy_unit).value):
+            x_ip1 = energy_edges[i+1].to(energy_unit).value
+            x_array = np.logspace(np.log10(x), np.log10(x_ip1), x_steps)
+            y = 10.**spline(np.log10(x_array)) * np.power(x_array, power)
+            integral[i] = simps(y * x_array, np.log(x_array))
+
+        integral_unit = u.Unit(dNdE_unit) * u.Unit(energy_unit) ** (1. + power)
+
+        return integral * integral_unit
+
+
     def plot_spectrum(self,
                       radius=None,
                       on_region=None,
