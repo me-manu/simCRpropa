@@ -324,10 +324,20 @@ class SimCRPropa(object):
         # depending on min requested time resolution
         # takes precedence over minStepLength
         if 'minTresol' in self.Simulation.keys():
-            dt = u.Quantity(self.Simulation['minTresol'])
-            self.Simulation['minStepLength'] = (dt * c.c.to("pc / {0:s}".format(dt.unit))).value
-            logging.info("Set step length to {0:.4e} pc " \
-                         "from requsted time resolution {1}".format(self.Simulation['minStepLength'],
+            if np.isscalar(self.Simulation['minTresol']):
+                self._minStepLength = list(np.full(len(self._bList),
+                                                  self.Simulation['minTresol']))
+            else:
+                self._minStepLength = self.Simulation['minTresol']
+
+            if not len(self._minStepLength) == len(self._bList):
+                raise ValueError("Bfield and minStepLength lists must have same length!")
+
+            dt = [u.Quantity(msl) for msl in self._minStepLength]
+            dt = np.array([t.value for t in dt]) * dt[0].unit
+            self._minStepLength = (dt * c.c.to("pc / {0:s}".format(dt[0].unit))).value
+            logging.info("Set step length(s) to {0} pc " \
+                         "from requsted time resolution(s) {1}".format(self._minStepLength,
                                                                     dt))
         # set up cosmology
         logging.info("Setting up cosmology with h={0[h]} and Omega_matter={0[Om]}".format(self.Cosmology))
@@ -801,6 +811,7 @@ class SimCRPropa(object):
                     for iz, z in enumerate(self._zList):
                         njobs = int(self._multiplicity[ib])
                         self.Simulation['multiplicity'] = int(self._multiplicity[ib])
+                        self.Simulation['minStepLength'] = self._minStepLength[ib]
                         self.Bfield['B'] = b
                         self.Bfield['maxTurbScale'] = l
                         self.Source['th_jet'] = t
