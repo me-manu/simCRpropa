@@ -216,7 +216,7 @@ if __name__ == '__main__':
     outdir = deepcopy(sim.FileIO['outdir'])
     useSpectrum = deepcopy(sim.Source['useSpectrum'])
     weights = deepcopy(sim.weights)
-    outtype = deepcopy(sim.Simulation['outputtype'])
+    outtype = deepcopy(sim.Simulation.get('outputtype', 'ascii'))
     del sim # free memorY
 
     # read the output
