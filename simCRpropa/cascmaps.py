@@ -475,6 +475,10 @@ class CascMap(object):
     def tmax(self):
         return self._tmax
 
+    @property
+    def tmin(self):
+        return self._tmin
+
     @tmax.setter
     def tmax(self, tmax):
         self._tmax = tmax.to('yr')
@@ -483,6 +487,14 @@ class CascMap(object):
         self._weights = np.ones_like(self._m.geom.axes['energy_injected'].center.value) * \
                         u.dimensionless_unscaled
 
+    @tmin.setter
+    def tmin(self, tmin):
+        self._tmin = tmin.to('yr')
+        #self.apply_time_weights()
+        #self._weights = np.ones_like(self._m.geom.axes['energy_injected'].center.value) * \
+                        #u.dimensionless_unscaled
+
+    #TODO implement tmin correctly!
     @property
     def angle(self):
         return self._angle
