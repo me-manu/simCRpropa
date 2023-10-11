@@ -17,7 +17,7 @@ from regions import CircleSkyRegion
 from astropy.coordinates import Angle
 from gammapy import __version__ as gpv
 from astropy.convolution import Tophat2DKernel, Gaussian2DKernel
-from collections import Iterable
+from collections.abc import Iterable
 
 if float(gpv.split('.')[1]) > 16 or float(gpv.split('.')[0]) > 0:
     from gammapy.utils.array import scale_cube
@@ -383,6 +383,10 @@ class CascMap(object):
             where the flux in a time bin is the average counts collected in that bin. Use 'linear' if the weights
             are truly of differential type, e.g., when extracted from a radio light curve.
 
+        Returns
+        --------
+        tuple with time delays and corresponding weights
+
         Notes
         -----
         * If weights are None then they will be set such that they are constant up to the maximum
@@ -394,20 +398,25 @@ class CascMap(object):
         # get the time delay axis
         t_axis = self._m.geom.axes['t_delay']
 
-        if look_back_times is None or weights is None:
+        if weights is None:
             look_back_times = [0., self._tmax.to(t_axis.unit).value]
             weights = [1., 1.]
 
-        interp = interp1d(look_back_times, weights / np.mean(weights),
-                                  fill_value=0.,
-                                  bounds_error=False,
-                                  kind=interpolation_type
-                                  )
-        # interp weights over time delay axis
-        # TODO this should probably be replaced by oversampling, if interpolation is not nearest
+        elif look_back_times is not None and not weights.size == t_axis.center.size:
+            interp = interp1d(look_back_times, weights / np.mean(weights),
+                                      fill_value=0.,
+                                      bounds_error=False,
+                                      kind=interpolation_type
+                                      )
+            # interp weights over time delay axis
+            # TODO this should probably be replaced by oversampling, if interpolation is not nearest
 
-        # interpolate weights over the time axis of the cascade
-        weights_interp = interp(t_axis.center)
+            # interpolate weights over the time axis of the cascade
+            weights = interp(t_axis.center)
+
+        # apply weights directly to different time delays
+        else:
+            weights = weights
 
         # Now we want to calculate the average cascade flux received within some time Window T_obs
         # which we calculate through the integral
@@ -420,12 +429,13 @@ class CascMap(object):
         # \sum_i weights(t_i) K(t_i) \Delta t_i
         # this calculation is performed by the next two lines:
         self._casc_map = self._m * \
-                         weights_interp[:, np.newaxis, np.newaxis, np.newaxis, np.newaxis]
+                         weights[:, np.newaxis, np.newaxis, np.newaxis, np.newaxis]
 
         self._casc = self._casc_map.sum_over_axes(['t_delay'], keepdims=False)
         # self._casc now contains the time averaged flux
         # given some source history until now (t=0)
         logging.debug("... Done.")
+        return t_axis.center, weights
 
     def sum_until_tmax(self):
         """
@@ -738,7 +748,7 @@ class CascMap(object):
             width = width.to("deg")
         else:
             width *= u.deg
-        nbins = np.ceil(2. * width / 2. / binsz).astype(np.int)
+        nbins = np.ceil(2. * width / 2. / binsz).astype(int)
         edges['lon'] = np.linspace(-width.value / 2.,
                                    width.value / 2.,
                                    nbins.value + 1) * width.unit
@@ -1008,7 +1018,7 @@ class CascMap(object):
 
             # get the central pixel locations
             idx = self._casc_obs.geom.center_pix[:-1]
-            idx_int = np.ceil(idx).astype(np.int)
+            idx_int = np.ceil(idx).astype(int)
 
             # add it to the central pixel of cascade map
             # for all observed energy bins
@@ -1093,6 +1103,101 @@ class CascMap(object):
         hdu_list.writeto(filename, overwrite=overwrite)
         # free up memory
         del wcs_map_export, map_export
+
+    def interpolate_spectrum(self,
+                             radius=None,
+                             on_region=None,
+                             energy_unit="GeV",
+                             dNdE_unit="TeV-1 cm-2 s-1",
+                             **kwargs
+                             ):
+        """
+        Compute a spline for spectral interpolation in log-log representation
+
+        Parameters
+        ----------
+        on_region: extraction region or None
+            region in which cascade is contribution is summed up
+        radius: str or None
+            if string, should be the angle of circular extraction region compatible with Angle, e.g., "0.1 deg".
+            Will overwrite on_region.
+
+        Returns
+        -------
+        tuple with spline and energies used for interpolation
+        """
+        kwargs.setdefault("k", 2)
+        kwargs.setdefault("s", 1e-4)
+        kwargs.setdefault("ext", r"extrapolate")
+
+        if radius is not None:
+            on_region = CircleSkyRegion(self._casc_obs.geom.center_skydir,
+                                        radius=Angle(radius))
+
+        spec_halo = self.get_obs_spectrum(
+            region=on_region
+        )
+
+        spec_tot = self.get_obs_spectrum(
+            region=on_region,
+            add_primary=True
+        )
+
+        energy_halo = spec_halo.geom.axes['energy_true']
+        energy_tot = spec_tot.geom.axes['energy_true']
+
+        flux_unit_conversion = spec_halo.quantity.unit.to(dNdE_unit)
+
+        x = np.log10(energy_halo.center.to(energy_unit).value)
+        y = (spec_halo.data[:, 0, 0] * flux_unit_conversion)
+        y[y == 0.] = 1e-60
+        y = np.log10(y)
+
+        spline = UnivariateSpline(x, y, **kwargs)
+
+        return spline, energy_halo.center.to(energy_unit)
+
+    def integrate_casc_spec(self,
+                            energy_edges,
+                            power=0,
+                            x_steps=100,
+                            radius=None,
+                            on_region=None,
+                            energy_unit="GeV",
+                            dNdE_unit="TeV-1 cm-2 s-1",
+                            **kwargs
+                            ):
+        """
+        Integrate the cascade spectrum between energy edges from spline interpolation
+
+        Parameters
+        ----------
+        :param radius:
+        :param on_region:
+        :param energy_unit:
+        :param dNdE_unit:
+        :param kwargs:
+
+        Return
+        ------
+        The integral within energy edges
+        """
+        spline, energies = self.interpolate_spectrum(radius=radius,
+                                                     energy_unit=energy_unit,
+                                                     dNdE_unit=dNdE_unit,
+                                                     **kwargs)
+
+        integral = np.zeros(energy_edges.size - 1)
+        for i, x in enumerate(energy_edges[:-1].to(energy_unit).value):
+            x_ip1 = energy_edges[i+1].to(energy_unit).value
+            x_array = np.logspace(np.log10(x), np.log10(x_ip1), x_steps)
+            y = 10.**spline(np.log10(x_array)) * np.power(x_array, power)
+            integral[i] = simps(y * x_array, np.log(x_array))
+
+        integral_unit = u.Unit(dNdE_unit) * u.Unit(energy_unit) ** (1. + power)
+
+        return integral * integral_unit
+
 
     def plot_spectrum(self,
                       radius=None,
@@ -1480,5 +1585,3 @@ class ASmooth(object):
                       color=plt.cm.Reds(0.7), ls='--')
 
         return fig, fig2
-
-
