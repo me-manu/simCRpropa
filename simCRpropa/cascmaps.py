@@ -96,7 +96,7 @@ def stack_results_lso(infile, outfile, **kwargs):
     # we used a single spectrum
     if config['Source']['useSpectrum']:
         for k in kwargs['entries']:
-            data[k] = combined[k][()]
+            data[k] = combined['simEM/' + k][()]
 
     # we used bins of mono-energetic particles
     else:

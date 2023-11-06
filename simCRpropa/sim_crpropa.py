@@ -598,8 +598,8 @@ class SimCRPropa(object):
                                                    self.Source['index']))
         else:
         # mono-energetic particle:
-            self.source.add(SourceParticleType(self.Source['Composition']))
             self.source.add(SourceEnergy(self.Source['Energy'] * eV))
+        self.source.add(SourceParticleType(self.Source['Composition']))
         logging.info('source initialized')
         return
 
