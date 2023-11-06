@@ -194,6 +194,9 @@ if __name__ == '__main__':
             sim.Source['Energy'] = sim.EeV[i]
             logging.info("======= Bin {0:n} / {1:n}, Energy : {2:3e} eV ========".format(
                 i + 1, sim.nbins, sim.EeV[i]))
+        logging.info("Running simulation for {1:n} particle(s), saving output to {0:s}".format(sim.outputfile,
+                sim.weights[i]))
+
         t0 = time.time()
 
         sim._create_source()
@@ -202,8 +205,6 @@ if __name__ == '__main__':
             sim.m.setShowProgress(True)
         else:
             sim.m.setShowProgress(False)
-        logging.info("Running simulation for {1:n} particle(s), saving output to {0:s}".format(sim.outputfile,
-                sim.weights[i]))
 
         # void run(SourceInterface *source, size_t count, bool recursive = true, bool secondariesFirst = false)
         sim.m.run(sim.source,  int(sim.weights[i]), True, True)

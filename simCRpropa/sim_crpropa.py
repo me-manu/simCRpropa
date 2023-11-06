@@ -274,6 +274,7 @@ class SimCRPropa(object):
 
         if self.Source['useSpectrum']:
             self.nbins = 1
+            self.weights = [self.Simulation['Nbatch']]
         # do a bin-by-bin analysis
         else:
             if not type(self.Source['Emin']) == type(self.Source['Emax']) \
@@ -582,14 +583,19 @@ class SimCRPropa(object):
         # nu_tau : 16
         # proton: 2212
         if self.Source['useSpectrum']:
-            spec = self.Source['Spectrum'].format(self.Source)
-            logging.info('Spectrum: {0}'.format(spec))
-            genericSourceComposition = SourceGenericComposition(self.Source['Emin'] * eV, 
-                                                                self.Source['Emax'] * eV, 
-                                                                spec)
-            genericSourceComposition.add(self.Source['Composition'],1)
-            self.source.add(genericSourceComposition)
+            #spec = self.Source['Spectrum'].format(self.Source)
+            #logging.info('Spectrum: {0}'.format(spec))
+            # this does not work anymore in CRPropa 3.2
+            #genericSourceComposition = SourceGenericComposition(self.Source['Emin'] * eV, 
+            #                                                    self.Source['Emax'] * eV, 
+            #                                                    spec)
+            #genericSourceComposition.add(self.Source['Composition'],1)
+            #self.source.add(genericSourceComposition)
             # for a power law use SourcePowerLawSpectrum (double Emin, double Emax, double index)
+            logging.info('Using power spectrum E^{0:.3f}'.format(self.Source['index']))
+            self.source.add(SourcePowerLawSpectrum(self.Source['Emin'] * eV, 
+                                                   self.Source['Emax'] * eV, 
+                                                   self.Source['index']))
         else:
         # mono-energetic particle:
             self.source.add(SourceParticleType(self.Source['Composition']))
