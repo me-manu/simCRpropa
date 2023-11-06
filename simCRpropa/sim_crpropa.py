@@ -51,9 +51,9 @@ def initRandomField(vgrid, Bamplitude, seed=0):
     nz = vgrid.getNz()
     logging.info("vgrid: nx = {0:n}, ny = {0:n}, nz = {0:n}".format(
         nx,ny,nz))
-    for xi in xrange(0,nx):
-        for yi in xrange(0,ny):
-            for zi in xrange(0,nz):
+    for xi in range(0,nx):
+        for yi in range(0,ny):
+            for zi in range(0,nz):
                 vect3d = vgrid.get(xi,yi,zi)
 
                 x = np.random.uniform(-1,1)
@@ -274,6 +274,7 @@ class SimCRPropa(object):
 
         if self.Source['useSpectrum']:
             self.nbins = 1
+            self.weights = [self.Simulation['Nbatch']]
         # do a bin-by-bin analysis
         else:
             if not type(self.Source['Emin']) == type(self.Source['Emax']) \
@@ -324,11 +325,26 @@ class SimCRPropa(object):
         # depending on min requested time resolution
         # takes precedence over minStepLength
         if 'minTresol' in self.Simulation.keys():
-            dt = u.Quantity(self.Simulation['minTresol'])
-            self.Simulation['minStepLength'] = (dt * c.c.to("pc / {0:s}".format(dt.unit))).value
-            logging.info("Set step length to {0:.4e} pc " \
-                         "from requsted time resolution {1}".format(self.Simulation['minStepLength'],
-                                                                    dt))
+            if np.isscalar(self.Simulation['minTresol']):
+                self._minStepLength = list(np.full(len(self._bList),
+                                                  self.Simulation['minTresol']))
+            else:
+                self._minStepLength = self.Simulation['minTresol']
+
+            if not len(self._minStepLength) == len(self._bList):
+                raise ValueError("Bfield and minStepLength lists must have same length!")
+
+            dt = [u.Quantity(msl) for msl in self._minStepLength]
+            dt = np.array([t.value for t in dt]) * dt[0].unit
+            self._minStepLength = (dt * c.c.to("pc / {0:s}".format(dt[0].unit))).value
+            self.Simulation['minStepLength'] = self._minStepLength[0]
+            logging.info("Set step length(s) to {0} pc " \
+                         "from requsted time resolution(s) {1}".format(self._minStepLength,
+                                                                        dt))
+        else:
+            self._minStepLength = self.Simulation['minStepLength']
+            logging.info("Set step length(s) to {0} pc ".format(self._minStepLength))
+
         # set up cosmology
         logging.info("Setting up cosmology with h={0[h]} and Omega_matter={0[Om]}".format(self.Cosmology))
         setCosmologyParameters(self.Cosmology['h'], self.Cosmology['Om'])
@@ -449,8 +465,11 @@ class SimCRPropa(object):
         #logging.info('B(10 Mpc, 0, 0)={0} nG'.format(self.bField.getField(Vector3d(10,0,0) * Mpc) / nG))
 
         logging.info('vgrid extension: {0:.3e} Mpc'.format(self.__extent / Mpc))
-        logging.info('<B^2> = {0:.3e} nG'.format(self.bField.getBrms() / nG))   # RMS
-        logging.info('<|B|> = {0:.3e} nG'.format(self.bField.getMeanFieldStrength() / nG))  # mean
+        try:
+            logging.info('<B^2> = {0:.3e} nG'.format(self.bField.getBrms() / nG))   # RMS
+            logging.info('<|B|> = {0:.3e} nG'.format(self.bField.getMeanFieldStrength() / nG))  # mean
+        except AttributeError:
+            pass
         logging.info('B(10 Mpc, 0, 0)={0} nG'.format(self.bField.getField(Vector3d(10,0,0) * Mpc) / nG))
         return
 
@@ -564,14 +583,19 @@ class SimCRPropa(object):
         # nu_tau : 16
         # proton: 2212
         if self.Source['useSpectrum']:
-            spec = self.Source['Spectrum'].format(self.Source)
-            logging.info('Spectrum: {0}'.format(spec))
-            genericSourceComposition = SourceGenericComposition(self.Source['Emin'] * eV, 
-                                                                self.Source['Emax'] * eV, 
-                                                                spec)
-            genericSourceComposition.add(self.Source['Composition'], 1)
-            self.source.add(genericSourceComposition)
+            #spec = self.Source['Spectrum'].format(self.Source)
+            #logging.info('Spectrum: {0}'.format(spec))
+            # this does not work anymore in CRPropa 3.2
+            #genericSourceComposition = SourceGenericComposition(self.Source['Emin'] * eV, 
+            #                                                    self.Source['Emax'] * eV, 
+            #                                                    spec)
+            #genericSourceComposition.add(self.Source['Composition'],1)
+            #self.source.add(genericSourceComposition)
             # for a power law use SourcePowerLawSpectrum (double Emin, double Emax, double index)
+            logging.info('Using power spectrum E^{0:.3f}'.format(self.Source['index']))
+            self.source.add(SourcePowerLawSpectrum(self.Source['Emin'] * eV, 
+                                                   self.Source['Emax'] * eV, 
+                                                   self.Source['index']))
         else:
         # mono-energetic particle:
             self.source.add(SourceParticleType(self.Source['Composition']))
@@ -764,6 +788,32 @@ class SimCRPropa(object):
         if self.Observer['zmin'] is not None:
             self.m.add(MinimumRedshift(-1. * self.Observer['zmin']))
 
+        # apply cut on rigidity for EM cascades
+        rigidity = self.BreakConditions.get('minRigidity', 50.)
+        # calc min rigidity of electron that produces average energy 
+        # larger than MinimumEnergy
+        # gamma factor of electron is given by gamma^2 = MinimumEnergy / mean CMB energy * 3 / 4
+        # where mean CMB energy is 634 micro eV 
+        # and where IC scattering in Thomson regime is assumed.
+        # and rigidity is R = p c / q = mc^2 * sqrt(gamma^2 - 1) / q
+        # divide min energy by 10 to be conservative
+        min_rigidity = np.sqrt( 3. / 4. * self.BreakConditions['Emin'] / 634.e-6 / 10. - 1.)
+
+        # this below is the prefactor m c^2 / q in Volt
+        min_rigidity *= crpropa.mass_electron * crpropa.c_squared / crpropa.eV * crpropa.volt
+        logging.info("The minimum electron / positron rigidity should be <~ {0:.3e} GV".format(min_rigidity / 1e9))
+
+        if rigidity > 0.:
+
+            if rigidity > min_rigidity:
+                raise ValueError("chosen minimal rigidity {0:.3e} GV too large for minimum chosen photon energy".format(rigidity))
+
+            self.m.add(MinimumRigidity(rigidity * crpropa.giga * crpropa.volt))
+            logging.info("Set minimum rigidity to {0:.3e} GV".format(rigidity / 1e9))
+
+        else:
+            logging.info("No cut on Rigidity set")
+
         # periodic boundaries
         #self.extent is the size of the B field grid        
         #sim.add(PeriodicBox(Vector3d(-self.__extent), Vector3d(2 * self.__extent)))
@@ -801,6 +851,8 @@ class SimCRPropa(object):
                     for iz, z in enumerate(self._zList):
                         njobs = int(self._multiplicity[ib])
                         self.Simulation['multiplicity'] = int(self._multiplicity[ib])
+                        self.Simulation['minStepLength'] = self._minStepLength[ib]
+                        self.Simulation.pop('minTresol', None)  # delete resolution, as step length is set
                         self.Bfield['B'] = b
                         self.Bfield['maxTurbScale'] = l
                         self.Source['th_jet'] = t
@@ -872,6 +924,7 @@ def main(**kwargs):
     parser.add_argument('--force_combine', help='force the combination of files', action="store_true")
     parser.add_argument('--resubmit-running-jobs', action="store_false", default=True, help='Resubmit jobs even if they are running')
     parser.add_argument('--mem', help='mimimum requested memory in MB for SDF cluster', type=int)
+    parser.add_argument('--loglevel', help='logging level', default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
 
     kwargs['dry'] = args.dry
@@ -883,7 +936,7 @@ def main(**kwargs):
     kwargs['mem'] = args.mem
     kwargs['no_resubmit_running_jobs'] = args.resubmit_running_jobs
     
-    utils.init_logging('DEBUG', color = True)
+    utils.init_logging(args.loglevel, color=True)
 
     with open(args.conf) as f:
         config = yaml.safe_load(f)
