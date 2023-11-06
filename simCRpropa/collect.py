@@ -12,7 +12,10 @@ try:
 except:
     pass
 from os import path
-from fermiAnalysis.batchfarm import utils, lsf
+try:
+    from fermiAnalysis.batchfarm import utils, lsf
+except:
+    pass
 from glob import glob
 from scipy.integrate import simps
 from collections import OrderedDict

@@ -569,7 +569,7 @@ class SimCRPropa(object):
             genericSourceComposition = SourceGenericComposition(self.Source['Emin'] * eV, 
                                                                 self.Source['Emax'] * eV, 
                                                                 spec)
-            genericSourceComposition.add(self.Source['Composition'],1)
+            genericSourceComposition.add(self.Source['Composition'], 1)
             self.source.add(genericSourceComposition)
             # for a power law use SourcePowerLawSpectrum (double Emin, double Emax, double index)
         else:
