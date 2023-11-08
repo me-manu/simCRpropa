@@ -874,7 +874,8 @@ class SimCRPropa(object):
                             self.config['configname'] = 'r'
                             kwargs['logdir'] = path.join(self.FileIO['outdir'],'log/')
                             kwargs['tmpdir'] = path.join(self.FileIO['outdir'],'tmp/')
-                            kwargs['jname'] = 'b{0:.2f}l{1:.2f}th{2:.2f}z{3:.3f}'.format(np.log10(b), np.log10(l), t, z)
+                            kwargs['jname'] = 'b{0:.2f}l{1:.2f}th{2:.2f}z{3:.3f}{4:s}'.format(
+                                np.log10(b), np.log10(l), t, z, self.Simulation.get('name', ''))
                             kwargs['log'] = path.join(kwargs['logdir'], kwargs['jname'] + ".out")
                             kwargs['err'] = path.join(kwargs['logdir'], kwargs['jname'] + ".err")
 

@@ -330,13 +330,8 @@ class CascMap(object):
             self._primary = None
 
         # 2d array for integration of injected energy
-        self._einj = []
-        for i, emin in enumerate(edges['energy_injected'][:-1].value):
-            self._einj.append(np.logspace(np.log10(emin),
-                                          np.log10(edges['energy_injected'][i+1].value),
-                                          steps))
+        self._einj = self.energy_integration_array(edges['energy_injected'], steps=steps)
 
-        self._einj = np.array(self._einj) * edges['energy_injected'].unit
         e_inj_axis = self._m.geom.axes['energy_injected']
         self._weights = np.ones_like(e_inj_axis.center.value) * \
                         u.dimensionless_unscaled
@@ -371,6 +366,30 @@ class CascMap(object):
 
         if config is not None:
             self._config = config
+
+    @staticmethod
+    def energy_integration_array(energy_bin_edges, steps=10):
+        """
+        Compute a 2d energy array for integration
+
+        Parameters
+        ----------
+        energy_bin_edges: `~astropy.Quantity`
+            the bin edges for energy
+        steps: int
+            number of integration points in each energy bin
+
+        Return
+        ------
+        The 2d energy array as an `~astropy.Quantity`
+        """
+        energy_2d_array = []
+        for i, emin in enumerate(energy_bin_edges[:-1].value):
+            energy_2d_array.append(np.logspace(np.log10(emin),
+                                          np.log10(energy_bin_edges[i + 1].value),
+                                          steps))
+        energy_2d_array = np.array(energy_2d_array) * energy_bin_edges.unit
+        return energy_2d_array
 
     def apply_time_weights(self, look_back_times=None, weights=None, interpolation_type='nearest'):
         """
@@ -870,7 +889,8 @@ class CascMap(object):
         lumi_iso *= doppler ** -4.
         return lumi_iso.to('erg s-1')
 
-    def _compute_spectral_weights(self, injspec, **kwargs):
+    @staticmethod
+    def compute_spectral_weights(injspec, energy_2d_array, target_unit, **kwargs):
         """
         Set weights to compute cascade for an arbitrary spectrum.
         Spectrum should take energies in eV and return flux units in terms of eV.
@@ -887,9 +907,9 @@ class CascMap(object):
         # flux of new injected spectrum integrated in
         # bins of injected spectrum
         # as update for weights
-        f = injspec(self._einj, **kwargs)
+        f = injspec(energy_2d_array, **kwargs)
 
-        target_unit = self._energy_injected.unit.to_string()
+        target_unit = target_unit.to_string()
 
         # make sure that the right energy unit is used
         funit_split = f.unit.to_string().split('/')
@@ -911,10 +931,11 @@ class CascMap(object):
             target_weight_unit = f.unit
 
         # compute weights
-        weights = simps(f.to(target_weight_unit).value * self._einj.value, np.log(self._einj.value), axis=1)
+        weights = simps(f.to(target_weight_unit).value * energy_2d_array.value,
+                        np.log(energy_2d_array.value), axis=1)
 
         # apply units
-        weights *= target_weight_unit * self._einj.unit
+        weights *= target_weight_unit * energy_2d_array.unit
         return weights
 
     def apply_spectral_weights(self, injspec, smooth=False, force_recompute=False, **kwargs):
@@ -931,7 +952,9 @@ class CascMap(object):
             additional parameters passed to injspec
         :return:
         """
-        weights = self._compute_spectral_weights(injspec, **kwargs)
+
+        weights = self.compute_spectral_weights(injspec, self._einj, self._energy_injected.unit, **kwargs)
+
         # weights did not change, return
         if not self._weights.unit == u.dimensionless_unscaled and not force_recompute \
                 and np.all(np.equal(weights, self._weights)):
