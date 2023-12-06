@@ -19,6 +19,7 @@ except:
 from glob import glob
 from scipy.integrate import simps
 from collections import OrderedDict
+from collections.abc import Iterable
 
 
 def combine_output(outfile, overwrite = False):
@@ -62,8 +63,9 @@ def combine_output(outfile, overwrite = False):
 
         if isinstance(conf['Source']['Emin'], float):
             esteps = conf['Source']['Esteps'] - 1
-        elif isinstance(conf['Source']['Emin'], list) or isinstance(conf['Source']['Emin'], tuple) or \
-            isinstance(conf['Source']['Emin'], np.ndarray):
+        #elif isinstance(conf['Source']['Emin'], list) or isinstance(conf['Source']['Emin'], tuple) or \
+        #    isinstance(conf['Source']['Emin'], np.ndarray):
+        elif isinstance(conf['Source']['Emin'], Iterable):
             esteps = len(conf['Source']['Emin'])
 
 
@@ -278,7 +280,7 @@ def convertOutput2Hdf5(names, units, data, weights, hfile,
             d = mom_vectors[['P' + v + 'x' for v in pvec_id].index(n),...]
         else:
             if n.find('ID') >= 0:
-                d = data[:,i].astype(np.int)
+                d = data[:,i].astype(int)
             else:
                 d = data[:,i]
 
@@ -288,13 +290,11 @@ def convertOutput2Hdf5(names, units, data, weights, hfile,
             dtype ='f8'
 
         if not useSpectrum:
-            if type(config['Source']['Emin']) == float or type(config['Source']['Emin']) == np.float:
+            if isinstance(config['Source']['Emin'], float):
                 EeVbins = np.logspace(np.log10(config['Source']['Emin']),
                     np.log10(config['Source']['Emax']), config['Source']['Esteps'])
 
-            elif type(config['Source']['Emin']) == list or type(config['Source']['Emin']) == tuple \
-                or type(config['Source']['Emin']) == np.ndarray:
-
+            elif isinstance(config['Source']['Emin'], Iterable):
                 EeVbins = np.append(config['Source']['Emin'], config['Source']['Emax'][-1])
 
             e0i = names.index('E0') # index of injected energy
@@ -563,7 +563,7 @@ class EMHist(object):
                     np.log10(data['E'][()].max()),
                     numebins))
         # time delay
-        if type(tbins) == type(None):
+        if tbins is None:
 
             tmin = np.max([0.1,data['dt'][()].min()])
             bins.append( np.concatenate([[tmin,3.],
@@ -802,9 +802,9 @@ class CRHist(object):
             steps for integration of intrinsic spectrum (default: 10)
         """
         # select particles 
-        if type(iddetection) == int:
+        if isinstance(iddetection, int):
             self._mc = (idobs == iddetection)
-        elif type(iddetection) == list:
+        elif isinstance(iddetection, Iterable):
             self._mc = idobs == iddetection[0]
             if len(iddetection) > 1:
                 for idd in iddetection[1:]:
@@ -881,9 +881,9 @@ class CRHist(object):
             number of energy bins for cascade energy axis
             (default: 40)
         """
-        if type(infile) == str:
+        if isinstance(infile, str):
             files = [infile]
-        elif type(infile) == list: 
+        elif isinstance(infile, Iterable): 
             files = infile
 
         for i,f in enumerate(files):
@@ -1187,7 +1187,7 @@ class emmap(object):
         logging.info("building the injected spectrum histogram  ...")
         # todo: accounted for redshift, but is it correct?
         if np.sum(self._mi):
-            if type(config) == dict:
+            if isinstance(config, dict):
                 # bins[0] contain the injected energies
                 # bins[0] / ( 1 + z) are the observed energies
                 self._hist_prim, self._edges_prim = np.histogramdd(data_primary.t,

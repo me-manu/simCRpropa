@@ -116,7 +116,7 @@ def limit_memory(maxsize):
     if maxsize * 1e6 > virtual_memory().total:
         maxsize = int(virtual_memory().total / 1e6)
     resource.setrlimit(resource.RLIMIT_AS, (maxsize * int(1e6), hard))
-    logging.info("limited memory to {0:n} Mbytes".format(maxsize))
+    logging.info("limited memory to {0:d} Mbytes".format(maxsize))
     return
 
 
@@ -151,7 +151,7 @@ if __name__ == '__main__':
 
     if not job_id:
         job_id = args.i
-    logging.info('tmpdir: {0:s}, job_id: {1:n}'.format(tmpdir,job_id))
+    logging.info('tmpdir: {0:s}, job_id: {1:d}'.format(tmpdir,job_id))
     os.chdir(tmpdir)    # go to tmp directory
     logging.info('Entering directory {0:s}'.format(tmpdir))
     logging.info('PWD is {0:s}'.format(os.environ["PWD"]))
@@ -192,9 +192,9 @@ if __name__ == '__main__':
 
         if not sim.Source['useSpectrum']:
             sim.Source['Energy'] = sim.EeV[i]
-            logging.info("======= Bin {0:n} / {1:n}, Energy : {2:3e} eV ========".format(
+            logging.info("======= Bin {0:d} / {1:d}, Energy : {2:3e} eV ========".format(
                 i + 1, sim.nbins, sim.EeV[i]))
-        logging.info("Running simulation for {1:n} particle(s), saving output to {0:s}".format(sim.outputfile,
+        logging.info("Running simulation for {1:d} particle(s), saving output to {0:s}".format(sim.outputfile,
                 sim.weights[i]))
 
         t0 = time.time()
@@ -209,7 +209,7 @@ if __name__ == '__main__':
         # void run(SourceInterface *source, size_t count, bool recursive = true, bool secondariesFirst = false)
         sim.m.run(sim.source,  int(sim.weights[i]), True, True)
         sim.output.close()
-        logging.info("Simulating bin {0:n} / {1:n} took {2:.1f} s".format(i + 1, sim.nbins, time.time() - t0))
+        logging.info("Simulating bin {0:d} / {1:d} took {2:.1f} s".format(i + 1, sim.nbins, time.time() - t0))
 
     utils.sleep(1.)
 

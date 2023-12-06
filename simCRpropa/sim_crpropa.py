@@ -1,9 +1,10 @@
 from crpropa import *
+import crpropa
 import logging
 import yaml
 import numpy as np
 import argparse
-from os import path
+from os import path, environ
 from fermiAnalysis.batchfarm import utils, lsf, sdf
 from copy import deepcopy
 from glob import glob
@@ -20,7 +21,7 @@ import h5py
 @lsf.setLsf
 def _submit_run_lsf(script, config, option, njobs, **kwargs):
     """Submit jobs to LSF (old) cluster using bsub"""
-    kwargs.setdefault('span', "span[ptile={:n}]".format(kwargs['n']))
+    kwargs.setdefault('span', "span[ptile={:d}]".format(kwargs['n']))
     option += " -b lsf"
     lsf.submit_lsf(script,
                    config,
@@ -33,9 +34,10 @@ def _submit_run_sdf(script, config, option, njobs, **kwargs):
     """Submit jobs to SDF cluster using slurm"""
     kwargs['ntasks_per_node'] = kwargs['n']
     if kwargs['n'] > 1 and kwargs['mem'] is None:
-        kwargs['mem'] = 4000 * kwargs['n']
+        kwargs['mem'] = int(4000 * kwargs['n'])
 
     option += " -b sdf"
+    
     sdf.submit_sdf(script,
                    config,
                    option,
@@ -49,7 +51,7 @@ def initRandomField(vgrid, Bamplitude, seed=0):
     nx = vgrid.getNx()
     ny = vgrid.getNy()
     nz = vgrid.getNz()
-    logging.info("vgrid: nx = {0:n}, ny = {0:n}, nz = {0:n}".format(
+    logging.info("vgrid: nx = {0:d}, ny = {0:d}, nz = {0:d}".format(
         nx,ny,nz))
     for xi in range(0,nx):
         for yi in range(0,ny):
@@ -317,7 +319,7 @@ class SimCRPropa(object):
             self.weights = self.weights.astype(int)
             self.nbins = self.EeV.size
             self.Source['Energy'] = self.EeV[0]
-            logging.info("There will be {0:n} energy bins".format(self.nbins))
+            logging.info("There will be {0:d} energy bins".format(self.nbins))
             if not self.nbins:
                 raise ValueError("No energy bins requested, change Emin, Emax, or Esteps")
 
@@ -353,9 +355,9 @@ class SimCRPropa(object):
     def setOutput(self,jobid, idB=0, idL=0, it=0, iz=0):
         """Set output file and directory"""
         if self.Simulation.get('outputtype', 'ascii') == 'ascii':
-            self.OutName = 'casc_{0:05n}.dat'.format(jobid)
+            self.OutName = 'casc_{0:05d}.dat'.format(jobid)
         elif self.Simulation.get('outputtype', 'ascii') == 'hdf5':
-            self.OutName = 'casc_{0:05n}.hdf5'.format(jobid)
+            self.OutName = 'casc_{0:05d}.hdf5'.format(jobid)
         else:
             raise ValueError("unknown output type chosen")
 
@@ -380,7 +382,7 @@ class SimCRPropa(object):
         self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['outdir'],
                         'th_obs{0[obsAngle]}/'.format(self.Observer)))
         self.FileIO['outdir'] = utils.mkdir(path.join(self.FileIO['outdir'],
-                        'spec{0[useSpectrum]:n}/'.format(self.Source)))
+                        'spec{0[useSpectrum]:d}/'.format(self.Source)))
 
         self.Bfield['B'] = self._bList[idB]
         self.Bfield['maxTurbScale'] = self._turbScaleList[idL]
@@ -394,7 +396,7 @@ class SimCRPropa(object):
         else:
             raise ValueError("Bfield type must be either 'cell' or 'turbulence' not {0[type]}".format(self.Bfield))
 
-        self.outputfile = str(path.join(self.FileIO['outdir'],self.OutName))
+        self.outputfile = str(path.join(self.FileIO['outdir'], self.OutName))
         logging.info("outdir: {0[outdir]:s}".format(self.FileIO))
         logging.info("outfile: {0:s}".format(self.outputfile))
         return
@@ -642,7 +644,15 @@ class SimCRPropa(object):
         # EMInverComptonScattering(PhotonField photonField = CMB,bool havePhotons = false,double limit = 0.1 ), 
         #if havePhotons = True, photons are created
         # also availableL EMDoublePairProduction, EMTripletPairProduction
-        self.m.add(EMPairProduction(self._EBL(), True, thinning))
+        try:
+            # CRpropa version with 
+            # possibility to deactivate small angle approximation
+            self.m.add(EMPairProduction(self._EBL(), True, thinning, self.Simulation.get('forward_approx', True)))
+            logging.info('Using forward approx: {0} (if this is false, simulation will be slower!)'.format(
+                self.Simulation.get('forward_approx', True)))
+        except:
+            self.m.add(EMPairProduction(self._EBL(), True, thinning))
+
         if self.Simulation.get('include_higher_order_pp', False):
             self.m.add(EMDoublePairProduction(self._EBL(), True, thinning))
             self.m.add(EMTripletPairProduction(self._EBL(), True, thinning))
@@ -860,14 +870,14 @@ class SimCRPropa(object):
                         self.D = redshift2ComovingDistance(self.Source['z']) # comoving source distance
                         self.setOutput(0, idB=ib, idL=il, it=it, iz=iz)
 
-                        outfile = path.join(self.FileIO['outdir'],self.OutName.split('_')[0] + '*.hdf5')
+                        outfile = path.join(self.FileIO['outdir'], self.OutName.split('_')[0] + '*.hdf5')
                         missing = utils.missing_files(outfile,njobs, split = '.hdf5')
                         self.config['Simulation']['n_cpu'] = kwargs['n']
 
                         if len(missing) < njobs:
                             logging.debug('here {0}'.format(njobs))
                             njobs = missing
-                            logging.info('there are {0:n} files missing in {1:s}'.format(len(missing),
+                            logging.info('there are {0:d} files missing in {1:s}'.format(len(missing),
                             outfile ))
 
                         if len(missing) and not force_combine:
