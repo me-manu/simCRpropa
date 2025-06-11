@@ -692,15 +692,16 @@ class SimCRPropa(object):
             photons = True
             electrons = True
             neutrinos = False
-            thinning = 1.0
         else:
             photons = False
             electrons = False
             neutrinos = True
-            thinning = 0.
         antinucleons = False if self.Source['Composition'] == 2212 else True
-        limit = 0.1 # limit to 0.5 instead 0.1 due to memory at high energies
-                    # of step size limit as fraction of mean free path 
+        limit = self.Simulation.get('thinning', 0.1)
+        logging.info("Set limit (= fraction of the mean free path, to which the propagation step will be limited)" +\
+                     " for PhotoPionProduction to {0}".format(limit))
+        if limit < 0.5:
+            logging.warning("for high energies, set limit to >= 0.5 to avoid memory problems")
 
         self.m = ModuleList()
         #PropagationCK (ref_ptr< MagneticField > field=NULL, double tolerance=1e-4,
@@ -737,6 +738,8 @@ class SimCRPropa(object):
 
         thinning = self.Simulation.get('thinning', 0.)
         logging.info("Using thinning {0}".format(thinning))
+        if thinning <= 0.1:
+            logging.warning("for high energies, you might want to choose higher thinning values (close to 1.)")
         # Updates redshift and applies adiabatic energy loss according to the traveled distance. 
         #m.add(Redshift())
         # Updates redshift and applies adiabatic energy loss according to the traveled distance. 
