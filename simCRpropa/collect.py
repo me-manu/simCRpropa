@@ -12,10 +12,14 @@ try:
 except:
     pass
 from os import path
-from fermiAnalysis.batchfarm import utils, lsf
+try:
+    from fermiAnalysis.batchfarm import utils, lsf
+except:
+    pass
 from glob import glob
 from scipy.integrate import simps
 from collections import OrderedDict
+from collections.abc import Iterable
 
 
 def combine_output(outfile, overwrite = False):
@@ -59,36 +63,55 @@ def combine_output(outfile, overwrite = False):
 
         if isinstance(conf['Source']['Emin'], float):
             esteps = conf['Source']['Esteps'] - 1
-        elif isinstance(conf['Source']['Emin'], list) or isinstance(conf['Source']['Emin'], tuple) or \
-            isinstance(conf['Source']['Emin'], np.ndarray):
+        #elif isinstance(conf['Source']['Emin'], list) or isinstance(conf['Source']['Emin'], tuple) or \
+        #    isinstance(conf['Source']['Emin'], np.ndarray):
+        elif isinstance(conf['Source']['Emin'], Iterable):
             esteps = len(conf['Source']['Emin'])
 
-        for name in f['simEM']:                                                                        
-            # check if number of bins is correct
-            if not 'weights' in f['simEM'][name].keys():
-                if not len(f['simEM'][name].keys()) == esteps:
-                    logging.error("Energy bins missing in {0:s}".format(fi))
-                    skipped = True
-                    skipped_files.append(i)
-                    break
-                else:
-                    skipped = False
 
-            for Eb in f['simEM'][name]:                                                                
-                k = 'simEM/' + name + '/' + Eb  
+        if not conf['Source']['useSpectrum']:
+            for name in f['simEM']:                                                                        
+                # check if number of bins is correct
+                if not 'weights' in f['simEM'][name].keys():
+                    if not len(f['simEM'][name].keys()) == esteps:
+                        logging.error("Energy bins missing in {0:s}".format(fi))
+                        skipped = True
+                        skipped_files.append(i)
+                        break
+                    else:
+                        skipped = False
+
+                for Eb in f['simEM'][name]:                                                                
+                    k = 'simEM/' + name + '/' + Eb  
+                    if not ifile:
+                        final_rows[k] = 0
+
+                    if ifile and (k == 'simEM/intspec/Ecen' or k == 'simEM/intspec/weights'):
+                        continue
+
+                    if len(f[k].shape) == 1:
+                        final_rows[k] = final_rows[k] + f[k].shape[0]
+                    elif len(f[k].shape) == 2: # position vectors
+                        final_rows[k] = final_rows[k] + f[k].shape[1]
+            f.close()
+            if not skipped:
+                ifile += 1
+        else:
+            for name in f['simEM']:                                                                        
+                k = 'simEM/' + name
                 if not ifile:
                     final_rows[k] = 0
 
-                if ifile and (k == 'simEM/intspec/Ecen' or k == 'simEM/intspec/weights'):
+                if (name  == 'intspec'):
                     continue
 
                 if len(f[k].shape) == 1:
                     final_rows[k] = final_rows[k] + f[k].shape[0]
                 elif len(f[k].shape) == 2: # position vectors
-                    final_rows[k] = final_rows[k] + f[k].shape[1]
-        f.close()
-        if not skipped:
+                        final_rows[k] = final_rows[k] + f[k].shape[1]
+            f.close()
             ifile += 1
+
 
     ifile = 0
     for i,fi in enumerate(ff):
@@ -103,8 +126,12 @@ def combine_output(outfile, overwrite = False):
             logging.error("There was a problem with {0:s}\nContinuing with next file".format(fi))
             continue
         for name in f['simEM']:                                                                        
-            for Eb in f['simEM'][name]:                                                                
-                k = 'simEM/' + name + '/' + Eb  
+            # we have simulated a spectrum
+            if conf['Source']['useSpectrum']:
+                k = 'simEM/' + name  
+                if name == 'intspec':
+                    continue
+
                 if ifile == 0:
                     where_to_start_appending[k] = 0
                     #first file; create the dummy dataset with no max shape
@@ -124,11 +151,9 @@ def combine_output(outfile, overwrite = False):
                             dtype = f[k].dtype,
                             compression="gzip")
                 if len(f[k].shape) == 1:
-                    if i and (k == 'simEM/intspec/Ecen' or k == 'simEM/intspec/weights'):
-                        continue
                     try:
                         combined[k][where_to_start_appending[k]:where_to_start_appending[k] + f[k].shape[0]] = \
-                            f[k][()] * len(ff) if k == 'simEM/intspec/weights' else f[k]
+                            f[k]
                         where_to_start_appending[k] += f[k].shape[0]
                     except IOError:
                         logging.error("There was a problem (IOError) with {0:s}\nContinuing with next file".format(fi))
@@ -136,6 +161,42 @@ def combine_output(outfile, overwrite = False):
                 elif len(f[k].shape) == 2:
                     combined[k][:,where_to_start_appending[k]:where_to_start_appending[k] + f[k].shape[1]] = f[k]
                     where_to_start_appending[k] += f[k].shape[1]
+
+            # we have simulated individual bins
+            else:
+                for Eb in f['simEM'][name]:                                                                
+                    k = 'simEM/' + name + '/' + Eb  
+                    if ifile == 0:
+                        where_to_start_appending[k] = 0
+                        #first file; create the dummy dataset with no max shape
+                    if len(f[k].shape) == 2 or (f[k].shape[0] == 0 and (k.find('X') >= 0 or k.find('P') >= 0)):
+
+                        if not k in combined:
+                            combined.create_dataset(k, 
+                                (3,final_rows[k]),
+                                dtype = f[k].dtype,
+                                compression="gzip")  
+
+                    elif len(f[k].shape) == 1:
+
+                        if not k in combined:
+                            combined.create_dataset(k,
+                                (final_rows[k],),
+                                dtype = f[k].dtype,
+                                compression="gzip")
+                    if len(f[k].shape) == 1:
+                        if i and (k == 'simEM/intspec/Ecen' or k == 'simEM/intspec/weights'):
+                            continue
+                        try:
+                            combined[k][where_to_start_appending[k]:where_to_start_appending[k] + f[k].shape[0]] = \
+                                f[k][()] * len(ff) if k == 'simEM/intspec/weights' else f[k]
+                            where_to_start_appending[k] += f[k].shape[0]
+                        except IOError:
+                            logging.error("There was a problem (IOError) with {0:s}\nContinuing with next file".format(fi))
+                            continue
+                    elif len(f[k].shape) == 2:
+                        combined[k][:,where_to_start_appending[k]:where_to_start_appending[k] + f[k].shape[1]] = f[k]
+                        where_to_start_appending[k] += f[k].shape[1]
 
         # copy config from last used file to combined file
         if i == len(ff) - 1:
@@ -219,7 +280,7 @@ def convertOutput2Hdf5(names, units, data, weights, hfile,
             d = mom_vectors[['P' + v + 'x' for v in pvec_id].index(n),...]
         else:
             if n.find('ID') >= 0:
-                d = data[:,i].astype(np.int)
+                d = data[:,i].astype(int)
             else:
                 d = data[:,i]
 
@@ -229,13 +290,11 @@ def convertOutput2Hdf5(names, units, data, weights, hfile,
             dtype ='f8'
 
         if not useSpectrum:
-            if type(config['Source']['Emin']) == float or type(config['Source']['Emin']) == np.float:
+            if isinstance(config['Source']['Emin'], float):
                 EeVbins = np.logspace(np.log10(config['Source']['Emin']),
                     np.log10(config['Source']['Emax']), config['Source']['Esteps'])
 
-            elif type(config['Source']['Emin']) == list or type(config['Source']['Emin']) == tuple \
-                or type(config['Source']['Emin']) == np.ndarray:
-
+            elif isinstance(config['Source']['Emin'], Iterable):
                 EeVbins = np.append(config['Source']['Emin'], config['Source']['Emax'][-1])
 
             e0i = names.index('E0') # index of injected energy
@@ -504,7 +563,7 @@ class EMHist(object):
                     np.log10(data['E'][()].max()),
                     numebins))
         # time delay
-        if type(tbins) == type(None):
+        if tbins is None:
 
             tmin = np.max([0.1,data['dt'][()].min()])
             bins.append( np.concatenate([[tmin,3.],
@@ -743,9 +802,9 @@ class CRHist(object):
             steps for integration of intrinsic spectrum (default: 10)
         """
         # select particles 
-        if type(iddetection) == int:
+        if isinstance(iddetection, int):
             self._mc = (idobs == iddetection)
-        elif type(iddetection) == list:
+        elif isinstance(iddetection, Iterable):
             self._mc = idobs == iddetection[0]
             if len(iddetection) > 1:
                 for idd in iddetection[1:]:
@@ -822,9 +881,9 @@ class CRHist(object):
             number of energy bins for cascade energy axis
             (default: 40)
         """
-        if type(infile) == str:
+        if isinstance(infile, str):
             files = [infile]
-        elif type(infile) == list: 
+        elif isinstance(infile, Iterable): 
             files = infile
 
         for i,f in enumerate(files):
@@ -1128,7 +1187,7 @@ class emmap(object):
         logging.info("building the injected spectrum histogram  ...")
         # todo: accounted for redshift, but is it correct?
         if np.sum(self._mi):
-            if type(config) == dict:
+            if isinstance(config, dict):
                 # bins[0] contain the injected energies
                 # bins[0] / ( 1 + z) are the observed energies
                 self._hist_prim, self._edges_prim = np.histogramdd(data_primary.t,

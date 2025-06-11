@@ -71,7 +71,7 @@ def stack_results_lso(infile, outfile, **kwargs):
     kwargs.setdefault('entries_stack', ['X', 'Px', 'P0x'])
     kwargs.setdefault('entries_save', ['E0', 'E', 'dt', 'Protsph', 'ID', 'ID1', 'W'])
     kwargs.setdefault('use_cosmo', True)
-    kwargs.setdefault('Dsource', None)
+    kwargs.setdefault('Dsource', 0.)
 
     combined = h5py.File(infile, 'r+')
     config = yaml.safe_load(combined[kwargs['dgrp']].attrs['config'])
@@ -93,79 +93,41 @@ def stack_results_lso(infile, outfile, **kwargs):
     else:
         n_ebins = len(config['Source']['Emin'])
 
-    for ie in range(n_ebins):
-        eb = 'Ebin{0:03n}'.format(ie)
+    # we used a single spectrum
+    if config['Source']['useSpectrum']:
         for k in kwargs['entries']:
-            ki = 'simEM/{1:s}/{0:s}'.format(eb,k)
+            data[k] = combined['simEM/' + k][()]
 
-            if not ie:
-                data[k] = combined[ki][()]
-            else:
-                if k in kwargs['entries_stack']:
-                    data[k] = np.hstack([data[k],
-                                         combined[ki][()]])
+    # we used bins of mono-energetic particles
+    else:
+        for ie in range(n_ebins):
+            eb = 'Ebin{0:03n}'.format(ie)
+            for k in kwargs['entries']:
+                ki = 'simEM/{1:s}/{0:s}'.format(eb,k)
+
+                if not ie:
+                    data[k] = combined[ki][()]
                 else:
-                    data[k] = np.concatenate([data[k],
-                                              combined[ki][()]])
+                    if k in kwargs['entries_stack']:
+                        data[k] = np.hstack([data[k],
+                                             combined[ki][()]])
+                    else:
+                        data[k] = np.concatenate([data[k],
+                                                  combined[ki][()]])
 
-    for k in ['intspec/Ecen', 'intspec/weights']:
-        logging.info("Saving {0} to {1:s}...".format(k, outfile))
-        grp.create_dataset(k, data=combined['simEM/' + k],
-                           dtype=combined['simEM/' + k].dtype,
-                           compression="gzip")
+        for k in ['intspec/Ecen', 'intspec/weights']:
+            logging.info("Saving {0} to {1:s}...".format(k, outfile))
+            grp.create_dataset(k, data=combined['simEM/' + k],
+                               dtype=combined['simEM/' + k].dtype,
+                               compression="gzip")
     combined.close()
     logging.info("Done.")
 
-    # rotate positional vectors
-    logging.info("Calculating vector rotations and "\
-                 "applying cuts for jet axis and observer ...")
+    mask = parallel_transport(data, jet_opening_angle=kwargs['theta_jet'],
+                              observing_angle=kwargs['theta_obs'])
 
-    # unit vector to observer
-    try:
-        xx0norm = (data['X'] - data['X0']) / np.linalg.norm(data['X'] - data['X0'], axis=0)
-    except KeyError:
-        xx0norm = (data['X']) / np.linalg.norm(data['X'], axis=0)
-    # project momentum vector into observer's coordinate system
-    pnew = rot.project2observer(data['Px'], xx0norm, axis=0)
-    # get pnew in spherical coordinates
-    pnewsph = rot.car2sph(-pnew)
-    # project initial momentum vector into observer's coordinate system
-    p0new = rot.project2observer(data['P0x'], xx0norm, axis=0)
-    # Calculate the mask for initial momentum
-    # vectors given jet observation and opening angle
-    mask = rot.projectjetaxis(p0new,
-                              jet_opening_angle=kwargs['theta_jet'],
-                              jet_theta_angle=kwargs['theta_obs'],
-                              jet_phi_angle=0.)
-
-    data['Protsph'] = np.vstack([pnewsph[0,:],
-                                 np.rad2deg(pnewsph[2,:] * np.sin(pnewsph[1,:])),
-                                 np.rad2deg(pnewsph[2,:] * np.cos(pnewsph[1,:])) + 90.
-                                 ])
-
-    logging.info("Done.")
-
-    # compute time delay in years
-    logging.info("Calculating time delay and angular separation...")
-    # from either cosmology ...
-    if kwargs['use_cosmo']:
-        try:
-            Dsource = crpropa.redshift2ComovingDistance(config['Source']['z']) * u.m.to('Mpc')
-        except:
-            # standards in CRPropa, see
-            # https://github.com/CRPropa/CRPropa3/blob/master/include/crpropa/Cosmology.h
-            cosmo = FlatLambdaCDM(H0=67.3, Om0=0.315)
-            Dsource = cosmo.comoving_distance(config['Source']['z']).value # in Mpc
-    else:
-        # crpropa distance was saved but in m, convert to Mpc
-        if 'ComovingDistance' in config['Source']:
-            Dsource = config['Source']['ComovingDistance'] * u.m.to('Mpc')
-        else:
-            Dsource = kwargs['Dsource']
-    logging.info("Using Dsource = {0:.5e} Mpc".format(Dsource))
-
-    data['dt'] = (data['D'] - Dsource)
-    data['dt'] *= (u.Mpc.to('m') * u.m / c.c).to('yr').value
+    time_delay(config, data, use_cosmo=kwargs['use_cosmo'],
+               Dsource=kwargs['Dsource'])
 
     # save to an hdf5 file
     logging.info("Saving {0} to {1:s}...".format(kwargs['entries_save'], outfile))
@@ -186,8 +148,88 @@ def stack_results_lso(infile, outfile, **kwargs):
     h.close()
     logging.info("Done.")
 
-    data['mask'] = mask
     return data, config
+
+
+def time_delay(config, data, use_cosmo=False, Dsource=0.):
+    """
+    Compute time delay in years
+
+    :param config: dict
+        dictionary with CRPropa config
+    :param data: dict
+        dictionary with CRPropa output data
+    :param use_cosmo: bool
+        If true, compute coming distance from CRPropa library
+    :param Dsource: float
+        Use this comoving distance if use_cosmo is False and
+        no ComovingDistance given in config
+    :return:
+    Nothing, but modifies data dict
+    """
+    # compute time delay in years
+    logging.info("Calculating time delay...")
+    # from either cosmology ...
+    if use_cosmo:
+        try:
+            Dsource = crpropa.redshift2ComovingDistance(config['Source']['z']) * u.m.to('Mpc')
+        except:
+            # standards in CRPropa, see
+            # https://github.com/CRPropa/CRPropa3/blob/master/include/crpropa/Cosmology.h
+            cosmo = FlatLambdaCDM(H0=67.3, Om0=0.315)
+            Dsource = cosmo.comoving_distance(config['Source']['z']).value  # in Mpc
+    else:
+        # crpropa distance was saved but in m, convert to Mpc
+        if 'ComovingDistance' in config['Source']:
+            Dsource = config['Source']['ComovingDistance'] * u.m.to('Mpc')
+        else:
+            Dsource = Dsource
+    logging.info("Using Dsource = {0:.5e} Mpc".format(Dsource))
+    data['dt'] = (data['D'] - Dsource)
+    data['dt'] *= (u.Mpc.to('m') * u.m / c.c).to('yr').value
+
+
+def parallel_transport(data, jet_opening_angle, observing_angle=0):
+    """
+    Compute parallel transport along sphere and mask for rejecting photons
+
+    :param data: dict
+        dictionary containing the CRPropa output data.
+        Will be modified in function
+    :param jet_opening_angle: float
+        Jet opening angle (full aperture)
+    :param observing_angle: float
+        angle between jet axis and line of sight
+    :return:
+    array with mask for photons that are rejected
+    """
+    # rotate positional vectors
+    logging.info("Calculating vector rotations and " \
+                 "applying cuts for jet axis and observer ...")
+    # unit vector to observer
+    try:
+        xx0norm = (data['X'] - data['X0']) / np.linalg.norm(data['X'] - data['X0'], axis=0)
+    except KeyError:
+        xx0norm = (data['X']) / np.linalg.norm(data['X'], axis=0)
+    # project momentum vector into observer's coordinate system
+    pnew = rot.project2observer(data['Px'], xx0norm, axis=0)
+    # get pnew in spherical coordinates
+    pnewsph = rot.car2sph(-pnew)
+    # project initial momentum vector into observer's coordinate system
+    p0new = rot.project2observer(data['P0x'], xx0norm, axis=0)
+    # Calculate the mask for initial momentum
+    # vectors given jet observation and opening angle
+    mask = rot.projectjetaxis(p0new,
+                              jet_opening_angle=jet_opening_angle,
+                              jet_theta_angle=observing_angle,
+                              jet_phi_angle=0.)
+    data['mask'] = mask
+    data['Protsph'] = np.vstack([pnewsph[0, :],
+                                 np.rad2deg(pnewsph[2, :] * np.sin(pnewsph[1, :])),
+                                 np.rad2deg(pnewsph[2, :] * np.cos(pnewsph[1, :])) + 90.
+                                 ])
+    logging.info("Done.")
+    return mask
 
 
 class HistPrimary(object):
@@ -323,13 +365,8 @@ class CascMap(object):
             self._primary = None
 
         # 2d array for integration of injected energy
-        self._einj = []
-        for i, emin in enumerate(edges['energy_injected'][:-1].value):
-            self._einj.append(np.logspace(np.log10(emin),
-                                          np.log10(edges['energy_injected'][i+1].value),
-                                          steps))
+        self._einj = self.energy_integration_array(edges['energy_injected'], steps=steps)
 
-        self._einj = np.array(self._einj) * edges['energy_injected'].unit
         e_inj_axis = self._m.geom.axes['energy_injected']
         self._weights = np.ones_like(e_inj_axis.center.value) * \
                         u.dimensionless_unscaled
@@ -365,6 +402,30 @@ class CascMap(object):
         if config is not None:
             self._config = config
 
+    @staticmethod
+    def energy_integration_array(energy_bin_edges, steps=10):
+        """
+        Compute a 2d energy array for integration
+
+        Parameters
+        ----------
+        energy_bin_edges: `~astropy.Quantity`
+            the bin edges for energy
+        steps: int
+            number of integration points in each energy bin
+
+        Return
+        ------
+        The 2d energy array as an `~astropy.Quantity`
+        """
+        energy_2d_array = []
+        for i, emin in enumerate(energy_bin_edges[:-1].value):
+            energy_2d_array.append(np.logspace(np.log10(emin),
+                                          np.log10(energy_bin_edges[i + 1].value),
+                                          steps))
+        energy_2d_array = np.array(energy_2d_array) * energy_bin_edges.unit
+        return energy_2d_array
+
     def apply_time_weights(self, look_back_times=None, weights=None, interpolation_type='nearest'):
         """
         Apply weights to the time bins to emulate a source light curve
@@ -383,6 +444,10 @@ class CascMap(object):
             where the flux in a time bin is the average counts collected in that bin. Use 'linear' if the weights
             are truly of differential type, e.g., when extracted from a radio light curve.
 
+        Returns
+        --------
+        tuple with time delays and corresponding weights
+
         Notes
         -----
         * If weights are None then they will be set such that they are constant up to the maximum
@@ -394,20 +459,25 @@ class CascMap(object):
         # get the time delay axis
         t_axis = self._m.geom.axes['t_delay']
 
-        if look_back_times is None or weights is None:
+        if weights is None:
             look_back_times = [0., self._tmax.to(t_axis.unit).value]
             weights = [1., 1.]
 
-        interp = interp1d(look_back_times, weights / np.mean(weights),
-                                  fill_value=0.,
-                                  bounds_error=False,
-                                  kind=interpolation_type
-                                  )
-        # interp weights over time delay axis
-        # TODO this should probably be replaced by oversampling, if interpolation is not nearest
+        elif look_back_times is not None and not weights.size == t_axis.center.size:
+            interp = interp1d(look_back_times, weights / np.mean(weights),
+                                      fill_value=0.,
+                                      bounds_error=False,
+                                      kind=interpolation_type
+                                      )
+            # interp weights over time delay axis
+            # TODO this should probably be replaced by oversampling, if interpolation is not nearest
 
-        # interpolate weights over the time axis of the cascade
-        weights_interp = interp(t_axis.center)
+            # interpolate weights over the time axis of the cascade
+            weights = interp(t_axis.center)
+
+        # apply weights directly to different time delays
+        else:
+            weights = weights
 
         # Now we want to calculate the average cascade flux received within some time Window T_obs
         # which we calculate through the integral
@@ -419,13 +489,14 @@ class CascMap(object):
         # simplifying and discretizing the remaining integral, one finds for the average flux
         # \sum_i weights(t_i) K(t_i) \Delta t_i
         # this calculation is performed by the next two lines:
-        self._casc_map = self._m * \
-                         weights_interp[:, np.newaxis, np.newaxis, np.newaxis, np.newaxis]
+        self._casc_map = self._m.copy() * \
+                         weights[:, np.newaxis, np.newaxis, np.newaxis, np.newaxis]
 
         self._casc = self._casc_map.sum_over_axes(['t_delay'], keepdims=False)
         # self._casc now contains the time averaged flux
         # given some source history until now (t=0)
         logging.debug("... Done.")
+        return t_axis.center, weights
 
     def sum_until_tmax(self):
         """
@@ -530,7 +601,9 @@ class CascMap(object):
                       binsz=0.02,
                       id_detection=22,
                       lightcurve=None,
-                      smooth_kwargs={'kernel': Tophat2DKernel, 'threshold': 4, 'steps': 50}
+                      smooth_kwargs={'kernel': Tophat2DKernel, 'threshold': 4, 'steps': 50},
+                      tmin_cut=None,
+                      tmax_cut=None
                       ):
         # TODO allow to supply map WCS geometry?
         # TODO include some print / logging statements
@@ -587,7 +660,10 @@ class CascMap(object):
                                                                       values,
                                                                       id_detection=id_detection,
                                                                       id_injected=config['Source']['Composition'],
-                                                                      config=config)
+                                                                      config=config,
+                                                                      tmin_cut=tmin_cut,
+                                                                      tmax_cut=tmax_cut
+                                                                      )
 
         # divide histogram by injected number of particles
         hist_casc /= n_injected_particles[np.newaxis, :, np.newaxis, np.newaxis, np.newaxis]
@@ -738,7 +814,7 @@ class CascMap(object):
             width = width.to("deg")
         else:
             width *= u.deg
-        nbins = np.ceil(2. * width / 2. / binsz).astype(np.int)
+        nbins = np.ceil(2. * width / 2. / binsz).astype(int)
         edges['lon'] = np.linspace(-width.value / 2.,
                                    width.value / 2.,
                                    nbins.value + 1) * width.unit
@@ -755,7 +831,8 @@ class CascMap(object):
         return binsz, config, edges, n_injected_particles, values, width
 
     @staticmethod
-    def build_nd_histogram(edges, values, config=None, id_detection=22, id_injected=None):
+    def build_nd_histogram(edges, values, config=None,
+                           id_detection=22, id_injected=None, tmin_cut=None, tmax_cut=None):
         """
         Build an n x d dimensional histogram from cascade simulations
 
@@ -781,6 +858,15 @@ class CascMap(object):
         else:
             mc = (values['id_obs'] == id_detection) & \
                  (values['id_parent'] != id_injected)
+
+        if tmin_cut is not None:
+            mc &= values['t_delay'] >= tmin_cut.to(u.yr).value
+            logging.warning(f"cutting cascade photons with time delay < {tmin_cut}")
+
+        if tmax_cut is not None:
+            mc &= values['t_delay'] <= tmax_cut.to(u.yr).value
+            logging.warning(f"cutting cascade photons with time delay > {tmax_cut}")
+
         # build data cube for cascade
         if np.sum(mc):
             data_casc = np.array([values[k][mc] for k in edges.keys()])
@@ -853,7 +939,8 @@ class CascMap(object):
         lumi_iso *= doppler ** -4.
         return lumi_iso.to('erg s-1')
 
-    def _compute_spectral_weights(self, injspec, **kwargs):
+    @staticmethod
+    def compute_spectral_weights(injspec, energy_2d_array, target_unit, **kwargs):
         """
         Set weights to compute cascade for an arbitrary spectrum.
         Spectrum should take energies in eV and return flux units in terms of eV.
@@ -870,9 +957,9 @@ class CascMap(object):
         # flux of new injected spectrum integrated in
         # bins of injected spectrum
         # as update for weights
-        f = injspec(self._einj, **kwargs)
+        f = injspec(energy_2d_array, **kwargs)
 
-        target_unit = self._energy_injected.unit.to_string()
+        target_unit = target_unit.to_string()
 
         # make sure that the right energy unit is used
         funit_split = f.unit.to_string().split('/')
@@ -894,10 +981,11 @@ class CascMap(object):
             target_weight_unit = f.unit
 
         # compute weights
-        weights = simps(f.to(target_weight_unit).value * self._einj.value, np.log(self._einj.value), axis=1)
+        weights = simps(f.to(target_weight_unit).value * energy_2d_array.value,
+                        np.log(energy_2d_array.value), axis=1)
 
         # apply units
-        weights *= target_weight_unit * self._einj.unit
+        weights *= target_weight_unit * energy_2d_array.unit
         return weights
 
     def apply_spectral_weights(self, injspec, smooth=False, force_recompute=False, **kwargs):
@@ -914,7 +1002,9 @@ class CascMap(object):
             additional parameters passed to injspec
         :return:
         """
-        weights = self._compute_spectral_weights(injspec, **kwargs)
+
+        weights = self.compute_spectral_weights(injspec, self._einj, self._energy_injected.unit, **kwargs)
+
         # weights did not change, return
         if not self._weights.unit == u.dimensionless_unscaled and not force_recompute \
                 and np.all(np.equal(weights, self._weights)):
@@ -1008,7 +1098,7 @@ class CascMap(object):
 
             # get the central pixel locations
             idx = self._casc_obs.geom.center_pix[:-1]
-            idx_int = np.ceil(idx).astype(np.int)
+            idx_int = np.ceil(idx).astype(int)
 
             # add it to the central pixel of cascade map
             # for all observed energy bins
@@ -1093,6 +1183,101 @@ class CascMap(object):
         hdu_list.writeto(filename, overwrite=overwrite)
         # free up memory
         del wcs_map_export, map_export
+
+    def interpolate_spectrum(self,
+                             radius=None,
+                             on_region=None,
+                             energy_unit="GeV",
+                             dNdE_unit="TeV-1 cm-2 s-1",
+                             **kwargs
+                             ):
+        """
+        Compute a spline for spectral interpolation in log-log representation
+
+        Parameters
+        ----------
+        on_region: extraction region or None
+            region in which cascade is contribution is summed up
+        radius: str or None
+            if string, should be the angle of circular extraction region compatible with Angle, e.g., "0.1 deg".
+            Will overwrite on_region.
+
+        Returns
+        -------
+        tuple with spline and energies used for interpolation
+        """
+        kwargs.setdefault("k", 2)
+        kwargs.setdefault("s", 1e-4)
+        kwargs.setdefault("ext", r"extrapolate")
+
+        if radius is not None:
+            on_region = CircleSkyRegion(self._casc_obs.geom.center_skydir,
+                                        radius=Angle(radius))
+
+        spec_halo = self.get_obs_spectrum(
+            region=on_region
+        )
+
+        spec_tot = self.get_obs_spectrum(
+            region=on_region,
+            add_primary=True
+        )
+
+        energy_halo = spec_halo.geom.axes['energy_true']
+        energy_tot = spec_tot.geom.axes['energy_true']
+
+        flux_unit_conversion = spec_halo.quantity.unit.to(dNdE_unit)
+
+        x = np.log10(energy_halo.center.to(energy_unit).value)
+        y = (spec_halo.data[:, 0, 0] * flux_unit_conversion)
+        y[y == 0.] = 1e-60
+        y = np.log10(y)
+
+        spline = UnivariateSpline(x, y, **kwargs)
+
+        return spline, energy_halo.center.to(energy_unit)
+
+    def integrate_casc_spec(self,
+                            energy_edges,
+                            power=0,
+                            x_steps=100,
+                            radius=None,
+                            on_region=None,
+                            energy_unit="GeV",
+                            dNdE_unit="TeV-1 cm-2 s-1",
+                            **kwargs
+                            ):
+        """
+        Integrate the cascade spectrum between energy edges from spline interpolation
+
+        Parameters
+        ----------
+        :param radius:
+        :param on_region:
+        :param energy_unit:
+        :param dNdE_unit:
+        :param kwargs:
+
+        Return
+        ------
+        The integral within energy edges
+        """
+        spline, energies = self.interpolate_spectrum(radius=radius,
+                                                     energy_unit=energy_unit,
+                                                     dNdE_unit=dNdE_unit,
+                                                     **kwargs)
+
+        integral = np.zeros(energy_edges.size - 1)
+        for i, x in enumerate(energy_edges[:-1].to(energy_unit).value):
+            x_ip1 = energy_edges[i+1].to(energy_unit).value
+            x_array = np.logspace(np.log10(x), np.log10(x_ip1), x_steps)
+            y = 10.**spline(np.log10(x_array)) * np.power(x_array, power)
+            integral[i] = simps(y * x_array, np.log(x_array))
+
+        integral_unit = u.Unit(dNdE_unit) * u.Unit(energy_unit) ** (1. + power)
+
+        return integral * integral_unit
+
 
     def plot_spectrum(self,
                       radius=None,
