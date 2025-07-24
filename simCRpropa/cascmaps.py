@@ -60,6 +60,10 @@ def stack_results_lso(infile, outfile, **kwargs):
     DSource: float or None
         if use_cosmo is False, source distance will be taken from config dict if available,
         otherwise DSource (in Mpc) will be used
+    apply_angle_cut: bool
+        If True, discard photons in saved file that are outside emission cone after parallel transport (default: True)
+    compute_scattering_angle: bool
+        If True, calculate the angle of the last scattering (Neronov's triangle), default: False
 
     Returns
     -------
@@ -73,6 +77,8 @@ def stack_results_lso(infile, outfile, **kwargs):
     kwargs.setdefault('entries_save', ['E0', 'E', 'dt', 'Protsph', 'ID', 'ID1', 'W'])
     kwargs.setdefault('use_cosmo', True)
     kwargs.setdefault('Dsource', 0.)
+    kwargs.setdefault('apply_angle_cut', True)
+    kwargs.setdefault('compute_scattering_angle', False)
 
     combined = h5py.File(infile, 'r+')
     config = yaml.safe_load(combined[kwargs['dgrp']].attrs['config'])
@@ -139,6 +145,16 @@ def stack_results_lso(infile, outfile, **kwargs):
                                      data['Protsph'][2, :])
     logging.info("Done.")
 
+    if kwargs['compute_scattering_angle']:
+        logging.info("Calculating last scattering angle...")
+        data['scattering_angle'] = scattering_angle(data)
+        logging.info("Done.")
+        kwargs['entries_save'].append('scattering_angle')
+
+    if not kwargs['apply_angle_cut']:
+        data['mask'] = mask
+        kwargs['entries_save'].append('mask')
+
     time_delay(config, data, use_cosmo=kwargs['use_cosmo'],
                Dsource=kwargs['Dsource'])
 
@@ -149,20 +165,48 @@ def stack_results_lso(infile, outfile, **kwargs):
             del grp[k]
         if 'ID' in k:
             dtype = 'i8'
+        elif 'mask' in k:
+            dtype = 'bool'
         else:
             dtype = 'f8'
 
         if k == 'Protsph':
-            grp.create_dataset(k, dtype = dtype,
-                               data = data[k][:,mask], compression="gzip")
+            grp.create_dataset(k, dtype=dtype,
+                               data=data[k][:,mask] if kwargs['apply_angle_cut'] else data[k],
+                               compression="gzip")
         else:
-            grp.create_dataset(k, dtype = dtype,
-                               data = data[k][mask], compression="gzip")
+            grp.create_dataset(k, dtype=dtype,
+                               data=data[k][mask] if kwargs['apply_angle_cut'] else data[k],
+                               compression="gzip")
     h.close()
     logging.info("Done.")
 
     return data, config
 
+def scattering_angle(data):
+    """
+    Compute the last scattering angle
+
+    Code by Paolo Da Vela
+    """
+    raise NotImplementedError("Not yet fully implemented")
+
+    Dsource = crpropa.redshift2ComovingDistance(config['Source']['z']) * u.m.to('Mpc')
+
+    # what's P and P0?
+    costheta_dfl = (data['P0x'] * data['Px'] + data['P0y'] * data['Py'] + data['P0z'] * data['Pz']) / (
+                P * P0)
+
+    costheta_dfl[costheta_dfl > 1.] = 1.
+    theta_dfl = (180. / np.pi) * np.arccos(costheta_dfl)
+
+    l_gamma = np.sqrt(data['X1'] ** 2 + data['Y1'] ** 2 + data['Z1'] ** 2)
+    sin_theta = (l_gamma / Dsource) * np.sin((np.pi / 180.) * theta_dfl)
+    sin_theta[sin_theta > 1.] = 1.
+
+    scat_angle = (180. / np.pi) * np.arcsin(sin_theta)
+
+    return scat_angle
 
 def time_delay(config, data, use_cosmo=False, Dsource=0.):
     """
