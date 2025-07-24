@@ -15,6 +15,7 @@ from scipy.ndimage import rotate
 from scipy.interpolate import UnivariateSpline, interp1d
 from regions import CircleSkyRegion
 from astropy.coordinates import Angle
+from astropy.coordinates import angular_separation
 from gammapy import __version__ as gpv
 from astropy.convolution import Tophat2DKernel, Gaussian2DKernel
 from collections import Iterable
@@ -125,6 +126,18 @@ def stack_results_lso(infile, outfile, **kwargs):
 
     mask = parallel_transport(data, jet_opening_angle=kwargs['theta_jet'],
                               observing_angle=kwargs['theta_obs'])
+
+    logging.info("Calculating angular separations of original events to center...")
+    data['sep'] = angular_separation(0., 0.,
+                                     data['Px'][1, :],
+                                     data['Px'][2, :])
+    logging.info("Done.")
+
+    logging.info("Calculating angular separations of rotated events to center...")
+    data['sep_rot'] = angular_separation(0., 90.,
+                                     data['Protsph'][1, :],
+                                     data['Protsph'][2, :])
+    logging.info("Done.")
 
     time_delay(config, data, use_cosmo=kwargs['use_cosmo'],
                Dsource=kwargs['Dsource'])
@@ -940,10 +953,42 @@ class CascMap(object):
         return lumi_iso.to('erg s-1')
 
     @staticmethod
-    def compute_spectral_weights(injspec, energy_2d_array, target_unit, **kwargs):
+    def compute_spectral_weights(injspec, injected_energies, **kwargs):
         """
         Set weights to compute cascade for an arbitrary spectrum.
         Spectrum should take energies in eV and return flux units in terms of eV.
+
+        This function assumes that bin-by-bin injection is equal to injecting
+        an E^-1 power law
+
+        :param injspec: function pointer
+            The target spectrum of injected particles.
+            function that takes energy as Quantity and returns flux per energy.
+
+        :param injected_energies: `~gammapy.maps.axes.MapAxis`
+            energy axis for mono-energetic particle injection
+
+        :param kwargs: dict
+            additional parameters passed to injspec
+
+        :return:
+        """
+        # compute weights
+        weights = injspec(injected_energies.center, **kwargs)
+        weights *= injected_energies.center
+        weights *= np.log(injected_energies.edges[1:].value / injected_energies.edges[:-1].value)
+
+        # apply units
+        return weights
+    @staticmethod
+    def compute_spectral_weights_old(injspec, energy_2d_array, target_unit, **kwargs):
+        """
+        Set weights to compute cascade for an arbitrary spectrum.
+        Spectrum should take energies in eV and return flux units in terms of eV.
+
+        Note: this is the old (wrong) version of computing the spectral weights
+        and is only kept for backward compatibility. Use the
+        compute_spectral_weights function instead.
 
         :param injspec: function pointer
             function that takes energy as Quantity and returns flux per energy
@@ -988,7 +1033,7 @@ class CascMap(object):
         weights *= target_weight_unit * energy_2d_array.unit
         return weights
 
-    def apply_spectral_weights(self, injspec, smooth=False, force_recompute=False, **kwargs):
+    def apply_spectral_weights(self, injspec, smooth=False, force_recompute=False, method='new', **kwargs):
         """
         Apply weights to compute cascade for an arbitrary spectrum
 
@@ -998,12 +1043,24 @@ class CascMap(object):
         :param smooth: bool
             if True, apply adaptive smoothing to the cascade in each energy bin
 
+        :param method: str
+            either 'old' or 'new'
+
         :param kwargs: dict
             additional parameters passed to injspec
         :return:
         """
 
-        weights = self.compute_spectral_weights(injspec, self._einj, self._energy_injected.unit, **kwargs)
+        # old way of doing it
+        if method == 'old':
+            weights = self.compute_spectral_weights_old(injspec, self._einj, self._energy_injected.unit, **kwargs)
+        elif method == 'new':
+        # new way which assumes that bin-by-bin injection is
+        # equal to injecting a E^-1 spectrum
+            weights = self.compute_spectral_weights(injspec, self._energy_injected, **kwargs)
+
+        else:
+            raise ValueError("Method must be either 'old' or 'new'")
 
         # weights did not change, return
         if not self._weights.unit == u.dimensionless_unscaled and not force_recompute \
