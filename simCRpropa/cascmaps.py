@@ -1441,17 +1441,24 @@ class CascMap(object):
 
         # plot cascade
         if plot_casc:
+
+            self._yplot = spec_halo.data[:, 0, 0] * energy_halo.center.value ** 2. * flux_unit_conversion
+            self._xplot = energy_halo.center.to(energy_unit).value
+
             if plot_errorbar:
-                ax.errorbar(energy_halo.center.to(energy_unit).value,
-                            spec_halo.data[:, 0, 0] * energy_halo.center.value ** 2. * flux_unit_conversion,
+                ax.errorbar(self._xplot,
+                            self._yplot,
                             xerr=energy_halo.bin_width.to(energy_unit).value / 2.,
                             **kwargs_casc
                             )
             else:
-                ax.plot(energy_halo.center.to(energy_unit).value,
-                        spec_halo.data[:, 0, 0] * energy_halo.center.value ** 2. * flux_unit_conversion,
+                ax.plot(self._xplot,
+                        self._yplot,
                         **kwargs_casc
                         )
+        else:
+            self._xplot = None
+            self._yplot = None
 
         if plot_prim and self._primary is not None:
             if plot_errorbar:

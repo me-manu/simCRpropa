@@ -24,12 +24,13 @@ def integral_sim_pl(config, E0=1e12):
     # for other gamma_sim values
     else:
         gamma_p_1 = config['Source']['index'] + 1.
-        result = (config['Source']['Emax']) ** gamma_p_1 - (config['Source']['Emin']) ** gamma_p_1
+        result = config['Source']['Emax'] ** gamma_p_1 - config['Source']['Emin'] ** gamma_p_1
         result /= E0 ** config['Source']['index']
         result /= gamma_p_1
 
     # unit is in eV
     return result
+
 
 def get_weights(injected_energies, target_spectral_shape, config, E0=1e12):
     """
@@ -55,7 +56,7 @@ def get_weights(injected_energies, target_spectral_shape, config, E0=1e12):
         Dictionary for CRPropa simulation
 
     :param E0: float
-        Energy scale of power law in eV, default: 1e12 eV
+        Energy scale of power law in eV, default: 1e12
 
     :return:
     Array with spectral weights as numpy array
@@ -63,10 +64,10 @@ def get_weights(injected_energies, target_spectral_shape, config, E0=1e12):
 
     """
 
-    weight = target_spectral_shape(injected_energies)
-    weight /= (injected_energies / E0)**config['Source']['index']
+    weight = target_spectral_shape(injected_energies).to(u.dimensionless_unscaled).value
+    weight /= (injected_energies.to('eV').value / E0)**config['Source']['index']
 
-    return weight.to(u.dimensionless_unscaled).value
+    return weight
 
 
 def build_casc_histogram(data, energy_edges, weights=None, tmax_years=1e7):
@@ -147,7 +148,7 @@ def build_casc_histogram_individual_bin(data, energy_edges, injected_energy, wei
     mask_tot &= (data['E0'] == injected_energy)
 
     if not np.sum(mask_tot):
-        print(f"No cascade photons for {E_inj / 1e9:8.2f} GeV injected energy")
+        print(f"No cascade photons for {injected_energy / 1e9:8.2f} GeV injected energy")
         return None
 
     result = {}
@@ -197,21 +198,25 @@ def build_casc_spectrum(data, config, target_spectral_shape, params,
             - dnde: the cascade spectrum in physical units
     """
 
-    weights = get_weights(data['E0'] * u.eV, target_spectral_shape, config, E0=params['Scale'].to('eV'))
+    weights = get_weights(data['E0'] * u.eV, target_spectral_shape, config, E0=params['Scale'].to('eV').value)
 
     casc_hist_w = build_casc_histogram(data,
                                        energy_edges=energy_edges,
                                        weights=weights,
-                                       tmax_years = tmax_years)
+                                       tmax_years=tmax_years)
 
     integral_sim = integral_sim_pl(config, E0=params['Scale'].to('eV').value) * u.eV
 
-    casc_hist_w['dnde'] = casc_hist_w['counts'] / (casc_hist_w['dE'] * u.eV) * params['Prefactor'] * integral_sim / \
-                           config['Simulation']['Nbatch']
+    # number of simulated particles
+    n_sim = config['Simulation']['Nbatch'] * config['Simulation']['multiplicity']
+
+    casc_hist_w['dnde'] = casc_hist_w['counts'] / (casc_hist_w['dE'] * u.eV)
+    casc_hist_w['dnde'] *= params['Prefactor'] * integral_sim / n_sim
 
     return casc_hist_w
 
-def build_casc_spectrum_bin_by_bin(data, config, target_spectral_shape, params,
+
+def build_casc_spectrum_bin_by_bin(data, target_spectral_shape, config, params,
                                    energy_edges, tmax_years=1e7):
     """
     Compute the cascade spectrum from a simulation that used individual energies as injectio
@@ -245,31 +250,38 @@ def build_casc_spectrum_bin_by_bin(data, config, target_spectral_shape, params,
     """
     injected_energies = np.unique(data['E0'])
 
-    tot_hist_w = np.zeros(energy_edges_eV.size - 1)
+    tot_hist_w = np.zeros(energy_edges.size - 1)
+
+    _weight = []
 
     for i, E_inj in enumerate(injected_energies):
 
         # this is the weight for a gamma = -1 assumed
         # injected power law which is equivalent to individual injected energies
-        weight = target_spectral_shape(E_inj * u.eV, **params)
+        weight = target_spectral_shape(E_inj * u.eV)
         weight *= E_inj
-        weight *= np.log(configs[0]['Source']['Emax'][i] / configs[0]['Source']['Emin'][i])
+        weight *= np.log(config['Source']['Emax'][i] / config['Source']['Emin'][i])
         weight = weight.to(u.dimensionless_unscaled).value
 
-        casc_individual = build_casc_histogram_individual_bin(data[0], energy_edges, E_inj, weights=None,
-                                                              tmax_years=tmax.value)
+        casc_individual = build_casc_histogram_individual_bin(data, energy_edges, E_inj,
+                                                              weights=None,
+                                                              tmax_years=tmax_years)
 
-        # no casacade photons for this energy
+        _weight.append(weight * params['Prefactor'])
+        # no cascade photons for this energy
         if casc_individual is None:
             continue
 
-        tot_hist_w += casc_individual['counts'] * weight / configs[0]['Simulation']['Nbatch'][i]
+        n_sim = config['Simulation']['Nbatch'][i] * config['Simulation']['multiplicity']
+        tot_hist_w += casc_individual['counts'] * weight / n_sim
 
-    tot_hist_w = tot_hist_w * params['Prefactor'] * u.eV /  (casc_individual['dE'] * u.eV)
+    tot_hist_w = tot_hist_w * params['Prefactor'] * u.eV / (casc_individual['dE'] * u.eV)
 
     casc_bin_by_bin = dict(dnde=tot_hist_w)
     casc_bin_by_bin['dE'] = casc_individual['dE']
     casc_bin_by_bin['Ecen'] = casc_individual['Ecen']
+
+    #print(_weight)
 
     return casc_bin_by_bin
 

@@ -833,9 +833,13 @@ class SimCRPropa(object):
         if rigidity > 0.:
 
             if rigidity > min_rigidity / 1e9:
-                raise ValueError("chosen minimal rigidity {0:.3e} GV too large for minimum chosen photon energy".format(rigidity))
+                raise ValueError(
+                    "chosen minimal rigidity {0:.3e} GV too large for minimum chosen photon energy".format(rigidity))
 
-            self.m.add(MinimumRigidity(rigidity * crpropa.giga * crpropa.volt))
+            # CRPropa expects rigidity in eV??
+            #self.m.add(MinimumRigidity(rigidity * crpropa.giga * crpropa.volt))
+            self.m.add(MinimumRigidity(rigidity * crpropa.giga * crpropa.eV))
+
             logging.info("Set minimum rigidity to {0:.3e} GV".format(rigidity))
 
         else:
