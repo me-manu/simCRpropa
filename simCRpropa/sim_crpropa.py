@@ -826,6 +826,8 @@ class SimCRPropa(object):
         # divide min energy by 10 to be conservative
         min_rigidity = np.sqrt( 3. / 4. * self.BreakConditions['Emin'] / 634.e-6 / 10. - 1.)
 
+        # TODO: CRPropa takes rigidity as E / Z in eV
+        # TODO: calculations below assume Z=1 does not work for higher Z
         # this below is the prefactor m c^2 / q in Volt
         min_rigidity *= crpropa.mass_electron * crpropa.c_squared / crpropa.eV * crpropa.volt
         logging.info("The minimum electron / positron rigidity should be <~ {0:.3e} GV".format(min_rigidity / 1e9))
