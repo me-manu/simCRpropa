@@ -959,6 +959,8 @@ class SimCRPropa(object):
             self.Bfield['B'] = b
             njobs = int(self._multiplicity[ib])
 
+            self.setOutput(0, idB=ib, idL=0, it=0, iz=0)
+
             outfile = path.join(self.FileIO['outdir'], self.OutName.split('_')[0] + '*.hdf5')
             missing = utils.missing_files(outfile,njobs, split = '.hdf5')
             self.config['Simulation']['n_cpu'] = kwargs['n']
