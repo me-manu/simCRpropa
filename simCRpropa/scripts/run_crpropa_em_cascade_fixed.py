@@ -72,7 +72,7 @@ def RunSim(N, OutputName, B, show_progress=True):
     randomSeed = 42  # use a fixed seed so that all simulations use same B
     minScale = 2 * gridSpacing
     maxScale = 25. * Mpc
-    turbSpectrum = SimpleTurbulenceSpectrum(B, minScale, maxScale, 5. / 3)
+    turbSpectrum = SimpleTurbulenceSpectrum(B * gauss, minScale, maxScale, 5. / 3)
     BField = SimpleGridTurbulence(turbSpectrum, gridprops, randomSeed)
 
     # print some properties of our field
