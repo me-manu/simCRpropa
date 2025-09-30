@@ -941,6 +941,65 @@ class SimCRPropa(object):
                             collect.combine_output(outfile, overwrite=overwrite_combine)
         return
 
+    def run_fixed(self,  overwrite=False, force_combine=False, overwrite_combine=False,
+            **kwargs):
+        """Submit simulation jobs for the simCRpropa script with fixed simulation values"""
+        option = ""   # extra options passed to run crpropa sim script
+
+        script = path.join(path.abspath(path.dirname(simCRpropa.__file__)),
+                           'scripts/run_crpropa_em_cascade_fixed.py')
+        print(script)
+
+        if not path.isfile(script):
+            raise IOError("Script {0:s} not found!".format(script))
+
+        for ib, b in enumerate(self._bList):
+
+            self.Simulation['multiplicity'] = int(self._multiplicity[ib])
+            self.Bfield['B'] = b
+            njobs = int(self._multiplicity[ib])
+
+            outfile = path.join(self.FileIO['outdir'], self.OutName.split('_')[0] + '*.hdf5')
+            missing = utils.missing_files(outfile,njobs, split = '.hdf5')
+            self.config['Simulation']['n_cpu'] = kwargs['n']
+
+            if len(missing) < njobs:
+                logging.debug('here {0}'.format(njobs))
+                njobs = missing
+                logging.info('there are {0:d} files missing in {1:s}'.format(len(missing),
+                                                                                         outfile ))
+
+            if len(missing) and not force_combine:
+                self.config['configname'] = 'r'
+                kwargs['logdir'] = path.join(self.FileIO['outdir'],'log/')
+                kwargs['tmpdir'] = path.join(self.FileIO['outdir'],'tmp/')
+                kwargs['jname'] = 'b{0:.2f}{1:s}'.format(
+                                        np.log10(b), self.Simulation.get('name', ''))
+                kwargs['log'] = path.join(kwargs['logdir'], kwargs['jname'] + ".out")
+                kwargs['err'] = path.join(kwargs['logdir'], kwargs['jname'] + ".err")
+
+                # submit job to either to lsdf or sdf
+                if 'sdf' in socket.gethostname():
+                    _submit_run_sdf(script,
+                                    self.config,
+                                    option,
+                                    njobs,
+                                    **kwargs)
+                else:
+                    _submit_run_lsf(script,
+                                    self.config,
+                                    option,
+                                    njobs,
+                                    **kwargs)
+            else:
+                if len(missing) and force_combine:
+                    logging.info("There are files missing but combining anyways.")
+                else:
+                    logging.info("All files present.")
+
+                    collect.combine_output(outfile, overwrite=overwrite_combine)
+        return
+
 @lsf.setLsf
 def main(**kwargs):
     usage = "usage: %(prog)s"
@@ -948,6 +1007,8 @@ def main(**kwargs):
     parser = argparse.ArgumentParser(usage=usage,description=description)
     parser.add_argument('--conf', required=True)
     parser.add_argument('--dry', default=0, action="store_true")
+    parser.add_argument('--fixed', default=0, action="store_true",
+                        help="run script for fixed simulation parameters")
     parser.add_argument('--time', default='09:59',help='Max time for lsf cluster job')
     parser.add_argument('--n', default=8,help='number of reserved cores', type=int)
     parser.add_argument('--span', default='span[ptile=8]',help='spanning of jobs on lsf cluster')
@@ -976,11 +1037,18 @@ def main(**kwargs):
         config = yaml.safe_load(f)
 
     sim = SimCRPropa(**config)
-    sim.run(overwrite=bool(args.overwrite),
-        force_combine=bool(args.force_combine),
-        overwrite_combine=bool(args.overwrite_combine),
-        **kwargs)
+    if args.fixed:
+        sim.run_fixed(overwrite=bool(args.overwrite),
+                      force_combine=bool(args.force_combine),
+                      overwrite_combine=bool(args.overwrite_combine),
+                      **kwargs)
+    else:
+        sim.run(overwrite=bool(args.overwrite),
+                force_combine=bool(args.force_combine),
+                overwrite_combine=bool(args.overwrite_combine),
+                **kwargs)
     return sim
+
 
 if __name__ == '__main__':
     sim = main()
