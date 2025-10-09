@@ -245,8 +245,52 @@ def time_delay(config, data, use_cosmo=False, Dsource=0.):
     data['dt'] = (data['D'] - Dsource)
     data['dt'] *= (u.Mpc.to('m') * u.m / c.c).to('yr').value
 
+def calc_parallel_transport(X, X0, P, P0, jet_opening_angle, observing_angle=0):
+    """
+    Compute parallel transport along sphere and mask for rejecting photons
 
-def parallel_transport(data, jet_opening_angle, observing_angle=0):
+    :param X: dict
+        Position vectors on sphere with shape (3, N)
+    :param X0: dict
+        Initial position vectors on sphere with shape (3, N)
+    :param P: dict
+        momentum vectors on sphere with shape (3, N)
+    :param P0: dict
+        Initial momentum vectors on sphere with shape (3, N)
+    :param jet_opening_angle: float
+        Jet opening angle (full aperture)
+    :param observing_angle: float
+        angle between jet axis and line of sight
+    :return:
+    array with rotated momentum vectors with shape (3, N) and mask (array of size N) for photons that are rejected
+    """
+    # rotate positional vectors
+    # unit vector to observer
+    try:
+        xx0norm = (X-X0) / np.linalg.norm(X-X0, axis=0)
+    except KeyError:
+        xx0norm = X / np.linalg.norm(X, axis=0)
+    # project momentum vector into observer's coordinate system
+    pnew = rot.project2observer(P, xx0norm, axis=0)
+    # get pnew in spherical coordinates
+    pnewsph = rot.car2sph(-pnew)
+    # project initial momentum vector into observer's coordinate system
+    p0new = rot.project2observer(P0, xx0norm, axis=0)
+    # Calculate the mask for initial momentum
+    # vectors given jet observation and opening angle
+    mask = rot.projectjetaxis(p0new,
+                              jet_opening_angle=jet_opening_angle,
+                              jet_theta_angle=observing_angle,
+                              jet_phi_angle=0.)
+    mask = mask
+    protsph = np.vstack([pnewsph[0, :],
+                                 np.rad2deg(pnewsph[2, :] * np.sin(pnewsph[1, :])),
+                                 np.rad2deg(pnewsph[2, :] * np.cos(pnewsph[1, :])) + 90.
+                                 ])
+    return protsph, mask
+
+def parallel_transport(data, jet_opening_angle, observing_angle=0,
+                       p_column_name='Px', p0_column_name='P0'):
     """
     Compute parallel transport along sphere and mask for rejecting photons
 
@@ -269,11 +313,11 @@ def parallel_transport(data, jet_opening_angle, observing_angle=0):
     except KeyError:
         xx0norm = (data['X']) / np.linalg.norm(data['X'], axis=0)
     # project momentum vector into observer's coordinate system
-    pnew = rot.project2observer(data['Px'], xx0norm, axis=0)
+    pnew = rot.project2observer(data[p_column_name], xx0norm, axis=0)
     # get pnew in spherical coordinates
     pnewsph = rot.car2sph(-pnew)
     # project initial momentum vector into observer's coordinate system
-    p0new = rot.project2observer(data['P0x'], xx0norm, axis=0)
+    p0new = rot.project2observer(data[p0_column_name], xx0norm, axis=0)
     # Calculate the mask for initial momentum
     # vectors given jet observation and opening angle
     mask = rot.projectjetaxis(p0new,
