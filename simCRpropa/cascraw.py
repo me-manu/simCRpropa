@@ -64,13 +64,19 @@ def get_weights(injected_energies, target_spectral_shape, config, E0=1e12):
 
     """
 
+    # convert E0 to plain array 
+    if hasattr(injected_energies, 'unit'):
+        x = injected_energies.to('eV').value
+    else:
+        x = injected_energies
+
     weight = target_spectral_shape(injected_energies).to(u.dimensionless_unscaled).value
-    weight /= (injected_energies.to('eV').value / E0)**config['Source']['index']
+    weight /= (x / E0)**config['Source']['index']
 
     return weight
 
 
-def build_casc_histogram(data, energy_edges, weights=None, tmax_years=1e7):
+def build_casc_histogram(data, energy_edges, weights=None, tmax_years=1e7, apply_pt_mask=True, max_sep=None):
     """
     Build the histogram of observed cascade photons
 
@@ -86,6 +92,12 @@ def build_casc_histogram(data, energy_edges, weights=None, tmax_years=1e7):
     :param tmax_years: float
         Maximum of source activity time in years
 
+    :params apply_mask: bool
+        If True, apply the mask from the parallel transport to the data
+
+    :param max_sep: float
+        Maximum separation of cascade photon to the source in deg. If None, no cut is applied
+
     :return: dict
         dictionary with results:
             - counts: the counts in each bin
@@ -96,7 +108,14 @@ def build_casc_histogram(data, energy_edges, weights=None, tmax_years=1e7):
 
     mask_tdelay = mask & (data['dt'] <= tmax_years)
 
-    mask_tot = mask_tdelay * data['mask']
+    if apply_pt_mask:
+        mask_tot = mask_tdelay * data['mask']
+    else:
+        mask_tot = mask_tdelay
+
+    if max_sep is not None:
+        mask_sep = data['sep_rot'] <= max_sep
+        mask_tot &= mask_sep
 
     result = {}
 
@@ -166,7 +185,7 @@ def build_casc_histogram_individual_bin(data, energy_edges, injected_energy, wei
     return result
 
 def build_casc_spectrum(data, config, target_spectral_shape, params,
-                        energy_edges, tmax_years=1e7):
+                        energy_edges, tmax_years=1e7, apply_pt_mask=True, max_sep=None):
     """
     Compute the cascade spectrum from a simulation that used a power law as input
     and not individual energies.
@@ -190,6 +209,12 @@ def build_casc_spectrum(data, config, target_spectral_shape, params,
     :param tmax_years: float
         Maximum of source activity time in years
 
+    :param apply_mask: bool
+        If True, apply the mask from the parallel transport to the data
+
+    :param max_sep: float
+        Maximum separation of cascade photon to the source in deg. If None, no cut is applied.
+
     :return: dict
         dictionary with results:
             - counts: the counts in each bin
@@ -197,14 +222,21 @@ def build_casc_spectrum(data, config, target_spectral_shape, params,
             - dE: the bin width
             - dnde: the cascade spectrum in physical units
     """
+    if hasattr(data['E0'], 'unit'):
+        E0 = data['E0']
+    else:
+        E0 = data['E0'] * u.eV
 
-    weights = get_weights(data['E0'] * u.eV, target_spectral_shape, config, E0=params['Scale'].to('eV').value)
+    weights = get_weights(E0, target_spectral_shape, config, E0=params['Scale'].to('eV').value)
 
     casc_hist_w = build_casc_histogram(data,
                                        energy_edges=energy_edges,
                                        weights=weights,
-                                       tmax_years=tmax_years)
+                                       tmax_years=tmax_years,
+                                       max_sep=max_sep,
+                                       apply_pt_mask=apply_pt_mask)
 
+    # compute the integral over the injected spectrum
     integral_sim = integral_sim_pl(config, E0=params['Scale'].to('eV').value) * u.eV
 
     # number of simulated particles

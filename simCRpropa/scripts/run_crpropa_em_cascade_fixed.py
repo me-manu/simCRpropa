@@ -20,7 +20,28 @@ from subprocess import call, check_call, Popen, PIPE, check_output, CalledProces
 from simCRpropa.submit import init_lsf, init_sdf, limit_memory
 
 
-def RunSim(N, OutputName, B, show_progress=True):
+def RunSim(N, OutputName, B, show_progress=True,
+           h=0.7, Om=0.3,
+           z=0.140,
+           # set resolution
+           minStep=1e-5 * kpc,
+           maxStep=10. * Mpc,
+           tol=1e-11,
+           thinning=0.,
+           # spectral index
+           index = -1.5,
+           # half aperture of source
+           jetAngle=5.0,
+           # injected energies and min Rigidity
+           rigidity=50. * 1e9 * eV,
+           Emin=1e11 * eV,
+           Emax=5e13 * eV,
+           randomSeed=42,  # use a fixed seed so that all simulations use same B
+           # set up the B-field grid
+           gridPoints = 100,
+           gridSize = 50. * Mpc,
+           maxScale = 25. * Mpc
+           ):
     """
     Run the simulation with fixed parameters. Function adapted from Paolo Da Vela
 
@@ -37,41 +58,83 @@ def RunSim(N, OutputName, B, show_progress=True):
 
     show_progress: bool
         If true, show progress bar
+        Default: True
+
+    h: float
+        Hubble parameter
+        Default: 0.7
+    
+    Om: float
+        Matter density parameter
+        Default: 0.3
+
+    z: float
+        Redshift of the source  
+        Default: 0.140
+
+    minStep: float
+        Minimum step size in the propagation
+        Default: 1e-5 kpc
+
+    maxStep: float
+        Maximum step size in the propagation
+        Default: 10 Mpc
+
+    tol: float
+        Tolerance for the propagaion in simulation
+        Default: 1e-11
+
+    thinning: float
+        Thinning factor for the simulation
+        Default: 0.0 (no thinning)
+
+    index: float
+        Spectral index of the injected particles
+        Default: -1.5
+
+    jetAngle: float
+        Half aperture of the source in degrees
+        Default: 5 degrees
+
+    rigidity: float
+        Minimum rigidity of the injected particles
+        Default: 50 GV
+
+    Emin: float
+        Minimum energy of the injected particles
+        Default: 1e11 eV
+
+    Emax: float
+        Maximum energy of the injected particles
+        Default: 5e13 eV
+
+    randomSeed: int
+        Random seed for the B-field grid
+        Default: 42
+
+    gridPoints: int
+        Number of grid points in the B-field grid
+        Default: 100
+
+    gridSize: float
+        Size of the B-field grid in Mpc 
+        Default: 50 Mpc
+
+    maxScale: float
+        Maximum scale of the turbulence in the B-field grid in Mpc.
+        Default:25 Mpc, which is half of the grid size.
     """
 
     # fix cosmology
-    h = 0.7
-    Om = 0.3
-    z = 0.140
     setCosmologyParameters(h, Om)
     D = redshift2ComovingDistance(z)
 
-    # set resolution
-    minStep = 1e-5 * kpc
-    maxStep = 10. * Mpc
-    tol = 1e-11
-    thinning = 0.
-
-    # spectral index
-    index = -1.5
-
-    # half aperture of source
-    jetAngle = 5.0
-
-    # injected energies and min Rigidity
-    rigidity = 50. * 1e9 * eV
-    Emin = 1e11 * eV
-    Emax = 5e13 * eV
-
     # *** Setting up the B-field ***
-    gridPoints = 100
-    gridSize = 50. * Mpc
     gridSpacing = gridSize / gridPoints
     gridprops = GridProperties(Vector3d(0), gridPoints, gridSpacing)
     #randomSeed = random.randint(1, 1e6)
-    randomSeed = 42  # use a fixed seed so that all simulations use same B
+
     minScale = 2 * gridSpacing
-    maxScale = 25. * Mpc
     turbSpectrum = SimpleTurbulenceSpectrum(B * gauss, minScale, maxScale, 5. / 3)
     BField = SimpleGridTurbulence(turbSpectrum, gridprops, randomSeed)
 
@@ -172,6 +235,7 @@ if __name__ == '__main__':
     config['Source']['LightTravelDistance'] = redshift2LightTravelDistance(config['Source']['z'])
     config['Source']['LuminosityDistance'] = redshift2LuminosityDistance(config['Source']['z'])
     config['Source']['ComovingDistance'] = redshift2ComovingDistance(config['Source']['z'])
+    # TODO: needs to be saved! 
 
     t00 = time.time()
 
